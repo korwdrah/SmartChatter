@@ -26,8 +26,8 @@ public class EmbeddingClient {
     @Value("${embedding.api.batch-size:100}")
     private int batchSize;
 
-    @Value("${embedding.api.dimension:2048}")
-    private int dimension;
+    @Value("${embedding.api.dimensions:2048}")
+    private int dimensions;
     
     private static final Logger logger = LoggerFactory.getLogger(EmbeddingClient.class);
     private final WebClient webClient;
@@ -67,8 +67,8 @@ public class EmbeddingClient {
         Map<String, Object> requestBody = new HashMap<>();
         requestBody.put("model", modelId);
         requestBody.put("input", batch);
-        requestBody.put("dimension", dimension);  // 直接在根级别设置dimension
-        requestBody.put("encoding_format", "float");  // 添加编码格式
+        requestBody.put("dimensions", dimensions);  // 直接在根级别设置dimension
+//        requestBody.put("encoding_format", "float");  // 添加编码格式 GLM没有这个参数格式
 
         return webClient.post()
                 .uri("/embeddings")
