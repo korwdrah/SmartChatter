@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.client.DeepSeekClient;
+import com.yizhaoqi.smartpai.client.GLMClient;
 import com.yizhaoqi.smartpai.entity.SearchResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,8 +34,9 @@ public class ChatHandler {
     private static final Logger logger = LoggerFactory.getLogger(ChatHandler.class);
     private final RedisTemplate<String, String> redisTemplate;
     private final HybridSearchService searchService;
-    private final DeepSeekClient deepSeekClient;
+//    private final DeepSeekClient deepSeekClient;
     private final ObjectMapper objectMapper;
+    private final GLMClient glmClient;
     
     // 用于存储每个会话的完整响应
     private final Map<String, StringBuilder> responseBuilders = new ConcurrentHashMap<>();
@@ -45,10 +47,10 @@ public class ChatHandler {
 
     public ChatHandler(RedisTemplate<String, String> redisTemplate,
                       HybridSearchService searchService,
-                      DeepSeekClient deepSeekClient) {
+                      GLMClient glmClient) {
         this.redisTemplate = redisTemplate;
         this.searchService = searchService;
-        this.deepSeekClient = deepSeekClient;
+        this.glmClient = glmClient;
         this.objectMapper = new ObjectMapper();
     }
 
@@ -76,10 +78,11 @@ public class ChatHandler {
             // 4. 构建上下文
             String context = buildContext(searchResults);
             
-            // 5. 调用 DeepSeek API 并处理流式响应
-            logger.info("调用DeepSeek API生成回复");
-            deepSeekClient.streamResponse(userMessage, context, history, 
+            // 5. 调用 GLM API 并处理流式响应
+            logger.info("调用GLM API生成回复");
+            glmClient.streamResponse(userMessage, context, history,
                 chunk -> {
+                    //实际的accept方法
                     // 累积响应内容
                     StringBuilder responseBuilder = responseBuilders.get(session.getId());
                     if (responseBuilder != null) {
@@ -119,7 +122,7 @@ public class ChatHandler {
                         if (responseBuilder.length() == lastLength) {
                             // 没有新内容，可以认为响应已完成
                             responseFuture.complete(responseBuilder.toString());
-                            logger.info("DeepSeek响应已完成，长度: {}", responseBuilder.length());
+                            logger.info("GLM响应已完成，长度: {}", responseBuilder.length());
                             
                             // 发送响应完成通知
                             sendCompletionNotification(session);
@@ -291,7 +294,7 @@ public class ChatHandler {
 
     private String buildContext(List<SearchResult> searchResults) {
         if (searchResults == null || searchResults.isEmpty()) {
-            // 返回空字符串，让 DeepSeekClient 按"无检索结果"逻辑处理
+            // 返回空字符串，让 GLMClient 按"无检索结果"逻辑处理
             return "";
         }
 
