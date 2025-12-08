@@ -11,10 +11,10 @@ import org.springframework.web.reactive.function.client.ExchangeStrategies;
 @Configuration
 public class WebClientConfig {
     
-    @Value("${embedding.api.url}")
+    @Value("${glm.api.url}")
     private String apiUrl;
     
-    @Value("${embedding.api.key}")
+    @Value("${glm.api.key}")
     private String apiKey;
     
     @Bean
