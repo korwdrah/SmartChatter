@@ -109,6 +109,13 @@ embedding:
     model: embedding-3
     batch-size: 10  # 单次请求最大行数（DashScope限制为10）
     dimensions: 2048  # 指定向量维度
+glm:
+  api:
+    url: https://open.bigmodel.cn/api/paas/v4
+    key: 6848e2d96d484eaf9cbdb4051d4902b2.n7iXANyWbG71Hsx1
+    model: glm-4.5-flash
+
+
 
 ai:
   prompt:
