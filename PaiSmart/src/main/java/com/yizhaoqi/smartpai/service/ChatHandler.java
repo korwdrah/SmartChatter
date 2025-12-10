@@ -105,7 +105,7 @@ public class ChatHandler {
             new Thread(() -> {
                 try {
                     // 等待最多30秒，给API足够的响应时间
-                    Thread.sleep(3000); // 先等待3秒钟，让API有时间开始响应
+                    Thread.sleep(20000); // 先等待20秒钟，让API有时间开始响应 3秒都少了，因为是调用的api
                     
                     // 获取当前累积的响应内容
                     StringBuilder responseBuilder = responseBuilders.get(session.getId());
