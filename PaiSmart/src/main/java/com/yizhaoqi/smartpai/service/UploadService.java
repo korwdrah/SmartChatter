@@ -103,9 +103,12 @@ public class UploadService {
             // 检查数据库中是否存在分片信息
             boolean chunkInfoExists = false;
             try {
-                List<ChunkInfo> chunkInfos = chunkInfoRepository.findByFileMd5OrderByChunkIndexAsc(fileMd5);
-                chunkInfoExists = chunkInfos.stream()
-                    .anyMatch(chunk -> chunk.getChunkIndex() == chunkIndex);
+//                List<ChunkInfo> chunkInfos = chunkInfoRepository.findByFileMd5OrderByChunkIndexAsc(fileMd5);
+//                chunkInfoExists = chunkInfos.stream()
+//                    .anyMatch(chunk -> chunk.getChunkIndex() == chunkIndex);
+                //因为我对fileMd5和ChunkIndex加了索引，所以直接查就行了 这样还更快一点 然后直接查index就行，减少IO
+                Optional<Integer> chunkIdx = chunkInfoRepository.findChunkIndexByFileMd5AndChunkIndex(fileMd5, chunkIndex);
+                chunkInfoExists = chunkIdx.isPresent();
                 logger.debug("检查数据库中分片信息 => fileMd5: {}, fileName: {}, chunkIndex: {}, exists: {}", 
                           fileMd5, fileName, chunkIndex, chunkInfoExists);
             } catch (Exception e) {
@@ -196,7 +199,7 @@ public class UploadService {
                     throw new RuntimeException("上传分片到MinIO失败: " + e.getMessage(), e);
                 }
 
-                // 标记分片已上传
+                // 在redis中标记分片已上传
                 try {
                     logger.debug("标记分片为已上传 => fileMd5: {}, fileName: {}, chunkIndex: {}", fileMd5, fileName, chunkIndex);
                     markChunkUploaded(fileMd5, chunkIndex, userId);
