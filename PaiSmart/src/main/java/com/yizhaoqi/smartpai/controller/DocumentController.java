@@ -208,8 +208,9 @@ public class DocumentController {
     @GetMapping("/download")
     public ResponseEntity<?> downloadFileByName(
             @RequestParam String fileName,
-            @RequestParam(required = false) String token) {
-        
+            @RequestHeader("Authorization") String token){
+//            @RequestParam(required = false) String token) {
+        //跟preview接口一样的问题，就是出在这个token不显示的传入导致userId是username,而且这个token是空的
         LogUtils.PerformanceMonitor monitor = LogUtils.startPerformanceMonitor("DOWNLOAD_FILE_BY_NAME");
         try {
             // 验证token并获取用户信息
@@ -218,9 +219,10 @@ public class DocumentController {
             
             if (token != null && !token.trim().isEmpty()) {
                 try {
+                    token = token.replace("Bearer ", "").trim();
                     // 解析JWT token获取用户信息
                     // 注意：JWT中的sub字段存储用户名，userId字段存储用户ID（但有时可能存储的是用户名）
-                    userId = jwtUtils.extractUsernameFromToken(token);
+                    userId = jwtUtils.extractUserIdFromToken(token);
                     orgTags = jwtUtils.extractOrgTagsFromToken(token);
                 } catch (Exception e) {
                     LogUtils.logBusiness("DOWNLOAD_FILE_BY_NAME", "anonymous", "Token解析失败: fileName=%s", fileName);
@@ -333,7 +335,7 @@ public class DocumentController {
     @GetMapping("/preview")
     public ResponseEntity<?> previewFileByName(
             @RequestParam String fileName,
-            @RequestParam(required = false) String token) {
+            @RequestHeader("Authorization") String token) {
         
         LogUtils.PerformanceMonitor monitor = LogUtils.startPerformanceMonitor("PREVIEW_FILE_BY_NAME");
         try {
@@ -341,27 +343,33 @@ public class DocumentController {
             String userId = null;
             String orgTags = null;
             
-            // 优先从Spring Security上下文获取已认证的用户信息
-            try {
-                var authentication = SecurityContextHolder.getContext().getAuthentication();
-                if (authentication != null && authentication.isAuthenticated() 
-                    && authentication.getPrincipal() instanceof UserDetails) {
-                    UserDetails userDetails = (UserDetails) authentication.getPrincipal();
-                    userId = userDetails.getUsername();
-                    // 从userDetails中获取组织标签信息
-                    orgTags = userDetails.getAuthorities().stream()
-                        .map(auth -> auth.getAuthority().replace("ROLE_", ""))
-                        .findFirst()
-                        .orElse(null);
-                }
-            } catch (Exception e) {
-                LogUtils.logBusiness("PREVIEW_FILE_BY_NAME", "anonymous", "Security上下文获取失败: fileName=%s", fileName);
-            }
+            // 优先从Spring Security上下文获取已认证的用户信息(已抛弃，完全没用，直接用header中的token好的多)
+            //这里很大的问题，后续的documentService中，对于用户级别权限的查找只能是userId
+            //fileUpload表中只有userId，没有username
+            //但是这里的SecurityContext中存储的只有username，所以这是错误的，需要用username去找userId
+//            try {
+//                var authentication = SecurityContextHolder.getContext().getAuthentication();
+//                if (authentication != null && authentication.isAuthenticated()
+//                    && authentication.getPrincipal() instanceof UserDetails) {
+//                    UserDetails userDetails = (UserDetails) authentication.getPrincipal();
+//                    userId = userDetails.getUsername();
+//                    // 从userDetails中获取组织标签信息
+//                    orgTags = userDetails.getAuthorities().stream()
+//                        .map(auth -> auth.getAuthority().replace("ROLE_", ""))
+//                        .findFirst()
+//                        .orElse(null);
+//                }
+//            } catch (Exception e) {
+//                LogUtils.logBusiness("PREVIEW_FILE_BY_NAME", "anonymous", "Security上下文获取失败: fileName=%s", fileName);
+//            }
             
             // 如果Security上下文中没有用户信息，尝试从URL参数token中获取
-            if (userId == null && token != null && !token.trim().isEmpty()) {
+            // 这里不用上下文了，完全没用，多此一举，直接用token
+            if (token != null && !token.trim().isEmpty()) {
                 try {
-                    userId = jwtUtils.extractUsernameFromToken(token);
+                    //处理token
+                    token = token.replace("Bearer ", "").trim();
+                    userId = jwtUtils.extractUserIdFromToken(token);
                     orgTags = jwtUtils.extractOrgTagsFromToken(token);
                 } catch (Exception e) {
                     LogUtils.logBusiness("PREVIEW_FILE_BY_NAME", "anonymous", "Token解析失败: fileName=%s", fileName);

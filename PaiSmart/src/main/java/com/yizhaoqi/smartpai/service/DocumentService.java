@@ -123,10 +123,10 @@ public class DocumentService {
      */
     public List<FileUpload> getAccessibleFiles(String userId, String orgTags) {
         logger.info("获取用户可访问文件列表: userId={}", userId);
-        
+        Long userIdLong = Long.parseLong(userId);
         try {
             // 获取用户有效的组织标签（包含层级关系）
-            User user = userRepository.findByUsername(userId)
+            User user = userRepository.findById(userIdLong)
                 .orElseThrow(() -> new RuntimeException("用户不存在: " + userId));
             
             List<String> userEffectiveTags = orgTagCacheService.getUserEffectiveOrgTags(user.getUsername());
