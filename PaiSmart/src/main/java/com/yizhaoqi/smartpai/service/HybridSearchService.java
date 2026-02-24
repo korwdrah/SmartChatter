@@ -116,7 +116,7 @@ public class HybridSearchService {
                                         // 条件1: 用户可访问自己的文档
                                         .should(s1 -> s1.term(t -> t.field("userId").value(userDbId)))
                                         // 条件2: 公开文档
-                                        .should(s2 -> s2.term(t -> t.field("ublic").value(true)))
+                                        .should(s2 -> s2.term(t -> t.field("isPublic").value(true)))
                                         // 条件3: 组织标签
                                         .should(s3 -> {
                                             if (userEffectiveTags.isEmpty()) {
