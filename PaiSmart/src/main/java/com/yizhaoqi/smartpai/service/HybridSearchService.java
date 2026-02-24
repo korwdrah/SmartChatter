@@ -92,6 +92,22 @@ public class HybridSearchService {
                                 .queryVector(queryVector)
                                 .k(recallK)
                                 .numCandidates(recallK)
+                                .filter(f -> f.bool(bf -> bf
+                                        .should(s1 -> s1.term(t -> t.field("userId").value(userDbId)))
+                                        .should(s2 -> s2.term(t -> t.field("isPublic").value(true)))
+                                        .should(s3 -> {
+                                            if (userEffectiveTags.isEmpty()) {
+                                                return s3.matchNone(mn -> mn);
+                                            } else if (userEffectiveTags.size() == 1) {
+                                                return s3.term(t -> t.field("orgTag").value(userEffectiveTags.get(0)));
+                                            } else {
+                                                return s3.bool(inner -> {
+                                                    userEffectiveTags.forEach(tag -> inner.should(sh2 -> sh2.term(t -> t.field("orgTag").value(tag))));
+                                                    return inner;
+                                                });
+                                            }
+                                        })
+                                ))
                         );
                         // 必须命中关键词 + 权限过滤
                         s.query(q -> q.bool(b -> b
@@ -100,7 +116,7 @@ public class HybridSearchService {
                                         // 条件1: 用户可访问自己的文档
                                         .should(s1 -> s1.term(t -> t.field("userId").value(userDbId)))
                                         // 条件2: 公开文档
-                                        .should(s2 -> s2.term(t -> t.field("public").value(true)))
+                                        .should(s2 -> s2.term(t -> t.field("ublic").value(true)))
                                         // 条件3: 组织标签
                                         .should(s3 -> {
                                             if (userEffectiveTags.isEmpty()) {
