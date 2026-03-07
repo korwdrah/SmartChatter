@@ -95,42 +95,18 @@ public class UploadService {
                 }
             }
 
-            // 检查分片是否已经上传（Cache-Aside模式：Redis -> DB回填 -> MinIO校验）
+            // 校验逻辑: Redis -> MinIO（以MinIO为准, 完全解耦DB）
             // 步骤1: 先查Redis缓存
             boolean chunkUploaded = isChunkUploaded(fileMd5, chunkIndex, userId);
             logger.debug("检查Redis缓存 => fileMd5: {}, fileName: {}, chunkIndex: {}, isUploaded: {}",
                       fileMd5, fileName, chunkIndex, chunkUploaded);
 
-            // 步骤2: 如果Redis命中，由于写入顺序已改为 MinIO->DB->Redis，Redis有就说明DB肯定有，直接返回
             if (chunkUploaded) {
                 logger.info("Redis缓存命中, 分片已上传, 跳过处理 => fileMd5: {}, fileName: {}, chunkIndex: {}", fileMd5, fileName, chunkIndex);
                 return;
             }
 
-            // 步骤3: Redis未命中，查询DB
-            boolean chunkInfoExists = false;
-            try {
-                Optional<Integer> chunkIdx = chunkInfoRepository.findChunkIndexByFileMd5AndChunkIndex(fileMd5, chunkIndex);
-                chunkInfoExists = chunkIdx.isPresent();
-                logger.debug("查询DB => fileMd5: {}, fileName: {}, chunkIndex: {}, exists: {}",
-                          fileMd5, fileName, chunkIndex, chunkInfoExists);
-            } catch (Exception e) {
-                logger.warn("查询DB失败 => fileMd5: {}, fileName: {}, chunkIndex: {}, 错误: {}",
-                          fileMd5, fileName, chunkIndex, e.getMessage(), e);
-            }
-
-            // 步骤4: 如果DB有记录，回填Redis缓存
-            if (chunkInfoExists) {
-                logger.info("DB中存在分片记录, 回填Redis缓存 => fileMd5: {}, fileName: {}, chunkIndex: {}", fileMd5, fileName, chunkIndex);
-                try {
-                    markChunkUploaded(fileMd5, chunkIndex, userId);
-                } catch (Exception e) {
-                    logger.warn("回填Redis缓存失败(不影响业务) => fileMd5: {}, chunkIndex: {}, 错误: {}", fileMd5, chunkIndex, e.getMessage());
-                }
-                return; // DB有记录，分片已上传，跳过处理
-            }
-
-            // 步骤5: Redis和DB都没有，检查MinIO中是否存在（兜底校验）
+            // 步骤2: Redis未命中, 检查MinIO（以MinIO为准）
             String storagePath = "chunks/" + fileMd5 + "/" + chunkIndex;
             try {
                 StatObjectResponse stat = minioClient.statObject(
@@ -139,22 +115,22 @@ public class UploadService {
                         .object(storagePath)
                         .build()
                 );
-                logger.info("MinIO中存在分片文件(需补全DB和Redis) => fileMd5: {}, fileName: {}, chunkIndex: {}, path: {}, size: {}",
+                logger.info("MinIO中存在分片文件(补全Redis) => fileMd5: {}, fileName: {}, chunkIndex: {}, path: {}, size: {}",
                           fileMd5, fileName, chunkIndex, storagePath, stat.size());
-                // MinIO有文件但DB没有记录，需要补全DB和Redis
-                byte[] fileBytes = file.getBytes();
-                String chunkMd5 = DigestUtils.md5Hex(fileBytes);
-                saveChunkInfo(fileMd5, chunkIndex, chunkMd5, storagePath);
-                markChunkUploaded(fileMd5, chunkIndex, userId);
-                logger.info("补全DB和Redis成功 => fileMd5: {}, fileName: {}, chunkIndex: {}", fileMd5, fileName, chunkIndex);
+                // MinIO有文件, 只需补全Redis（DB写在MinIO前面, DB一定有记录）
+                try {
+                    markChunkUploaded(fileMd5, chunkIndex, userId);
+                } catch (Exception e) {
+                    logger.warn("补全Redis缓存失败(不影响业务) => fileMd5: {}, chunkIndex: {}, 错误: {}", fileMd5, chunkIndex, e.getMessage());
+                }
                 return;
             } catch (Exception e) {
                 logger.debug("MinIO中不存在分片文件, 需要上传 => fileMd5: {}, fileName: {}, chunkIndex: {}",
                           fileMd5, fileName, chunkIndex);
-                // MinIO也没有，继续执行上传流程
             }
 
-            // Redis、DB、MinIO都没有，执行上传流程
+            // Redis和MinIO都没有, 执行上传流程
+            // 写入顺序: DB -> MinIO -> Redis
             // 计算分片的 MD5 值
             logger.debug("计算分片MD5 => fileMd5: {}, fileName: {}, chunkIndex: {}", fileMd5, fileName, chunkIndex);
             byte[] fileBytes = file.getBytes();
@@ -162,7 +138,19 @@ public class UploadService {
             logger.debug("分片MD5计算完成 => fileMd5: {}, fileName: {}, chunkIndex: {}, chunkMd5: {}",
                        fileMd5, fileName, chunkIndex, chunkMd5);
 
-            // 步骤1: 存储到 MinIO
+            // 步骤1: 保存分片信息到数据库（INSERT IGNORE幂等）
+            try {
+                logger.debug("保存分片信息到数据库 => fileMd5: {}, fileName: {}, chunkIndex: {}, chunkMd5: {}, storagePath: {}",
+                          fileMd5, fileName, chunkIndex, chunkMd5, storagePath);
+                chunkInfoRepository.insertIgnore(fileMd5, chunkIndex, chunkMd5, storagePath);
+                logger.info("分片信息已保存到数据库 => fileMd5: {}, fileName: {}, chunkIndex: {}", fileMd5, fileName, chunkIndex);
+            } catch (Exception e) {
+                logger.error("保存分片信息到数据库失败 => fileMd5: {}, fileName: {}, chunkIndex: {}, 错误: {}",
+                          fileMd5, fileName, chunkIndex, e.getMessage(), e);
+                throw new RuntimeException("保存分片信息失败: " + e.getMessage(), e);
+            }
+
+            // 步骤2: 存储到 MinIO
             try {
                 logger.info("开始上传分片到MinIO => fileMd5: {}, fileName: {}, fileType: {}, chunkIndex: {}, bucket: uploads, path: {}, size: {}, contentType: {}",
                           fileMd5, fileName, fileType, chunkIndex, storagePath, file.getSize(), contentType);
@@ -180,7 +168,6 @@ public class UploadService {
                 logger.error("分片上传到MinIO失败 => fileMd5: {}, fileName: {}, fileType: {}, chunkIndex: {}, 错误类型: {}, 错误信息: {}",
                           fileMd5, fileName, fileType, chunkIndex, e.getClass().getName(), e.getMessage(), e);
 
-                // 详细记录不同类型的MinIO错误
                 if (e instanceof io.minio.errors.ErrorResponseException) {
                     io.minio.errors.ErrorResponseException ere = (io.minio.errors.ErrorResponseException) e;
                     logger.error("MinIO错误响应详情 => fileName: {}, code: {}, message: {}, resource: {}, requestId: {}",
@@ -191,19 +178,7 @@ public class UploadService {
                 throw new RuntimeException("上传分片到MinIO失败: " + e.getMessage(), e);
             }
 
-            // 步骤2: 保存分片信息到数据库（先写DB，确保数据持久化）
-            try {
-                logger.debug("保存分片信息到数据库 => fileMd5: {}, fileName: {}, chunkIndex: {}, chunkMd5: {}, storagePath: {}",
-                          fileMd5, fileName, chunkIndex, chunkMd5, storagePath);
-                saveChunkInfo(fileMd5, chunkIndex, chunkMd5, storagePath);
-                logger.info("分片信息已保存到数据库 => fileMd5: {}, fileName: {}, chunkIndex: {}", fileMd5, fileName, chunkIndex);
-            } catch (Exception e) {
-                logger.error("保存分片信息到数据库失败 => fileMd5: {}, fileName: {}, chunkIndex: {}, 错误: {}",
-                          fileMd5, fileName, chunkIndex, e.getMessage(), e);
-                throw new RuntimeException("保存分片信息失败: " + e.getMessage(), e);
-            }
-
-            // 步骤3: 在Redis中标记分片已上传（最后写缓存，遵循Cache-Aside模式）
+            // 步骤3: 在Redis中标记分片已上传（最后写缓存）
             try {
                 logger.debug("标记分片为已上传 => fileMd5: {}, fileName: {}, chunkIndex: {}", fileMd5, fileName, chunkIndex);
                 markChunkUploaded(fileMd5, chunkIndex, userId);
@@ -211,8 +186,7 @@ public class UploadService {
             } catch (Exception e) {
                 logger.error("标记分片已上传失败 => fileMd5: {}, fileName: {}, chunkIndex: {}, 错误: {}",
                           fileMd5, fileName, chunkIndex, e.getMessage(), e);
-                // 这里不抛出异常，因为MinIO和DB已经写入成功，缓存失败不影响数据一致性
-                // 后续查询时会通过DB回填缓存
+                // DB和MinIO已写入成功, 缓存失败不影响数据一致性, 后续校验时会通过MinIO回填Redis
             }
 
             logger.info("分片处理完成 => fileMd5: {}, fileName: {}, fileType: {}, chunkIndex: {}", fileMd5, fileName, fileType, chunkIndex);
