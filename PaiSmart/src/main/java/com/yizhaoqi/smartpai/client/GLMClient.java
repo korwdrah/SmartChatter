@@ -3,17 +3,21 @@ package com.yizhaoqi.smartpai.client;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.config.AiProperties;
+import io.micrometer.common.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
+import reactor.util.retry.Retry;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 @Service
@@ -41,10 +45,10 @@ public class GLMClient {
     }
 
     public void streamResponse(String userMessage,
-                             String context,
-                             List<Map<String, String>> history,
-                             Consumer<String> onChunk,
-                             Consumer<Throwable> onError) {
+                               String context,
+                               List<Map<String, String>> history,
+                               Consumer<String> onChunk,
+                               Consumer<Throwable> onError, Runnable onClose) {
         Map<String, Object> request = buildRequest(userMessage, context, history);
         webClient.post()
                 .uri("/chat/completions")
@@ -52,9 +56,17 @@ public class GLMClient {
                 .bodyValue(request)
                 .retrieve()
                 .bodyToFlux(String.class)
+                //重试机制
+                .retryWhen(Retry.fixedDelay(3, Duration.ofSeconds(1)))
+                //当响应数据块达到结束标记时，取消订阅 直接执行onClose方法
+                .takeWhile(chunk -> !"[DONE]".equals(chunk))
+                //提取内容
+                .map(this::extractContentFromChunk)
+                .filter(StringUtils::isNotBlank)
                 .subscribe(
-                        chunk -> processChunk(chunk, onChunk),
-                        onError
+                        onChunk,
+                        onError,
+                        onClose
                 );
     }
 
@@ -79,6 +91,22 @@ public class GLMClient {
         }
         catch (Exception e){
             logger.error("处理数据块时出错: {}", e.getMessage(), e);
+        }
+    }
+
+    public String extractContentFromChunk(String chunk){
+        try{
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode node = mapper.readTree(chunk);
+            return node.path("choices")
+                    .path(0)
+                    .path("delta")
+                    .path("content")
+                    .asText("");
+        }
+        catch (Exception e){
+            logger.error("解析数据块时出错: {}", e.getMessage(), e);
+            return "";
         }
     }
 

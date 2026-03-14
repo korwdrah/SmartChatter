@@ -15,6 +15,7 @@ import org.springframework.web.socket.WebSocketSession;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -80,18 +81,38 @@ public class ChatHandler {
             
             // 5. 调用 GLM API 并处理流式响应
             logger.info("调用GLM API生成回复");
+//            glmClient.streamResponse(userMessage, context, history,
+//                chunk -> {
+//                    //实际的accept方法 也就是回调函数执行的逻辑
+//                    // 累积响应内容
+//                    StringBuilder responseBuilder = responseBuilders.get(session.getId());
+//                    if (responseBuilder != null) {
+//                        responseBuilder.append(chunk);
+//                    }
+//                    sendResponseChunk(session, chunk);
+//                },
+//                error -> {
+//                    // 处理错误并完成future
+//                    handleError(session, error);
+//                    // 发送响应完成通知（错误情况）
+//                    sendCompletionNotification(session);
+//                    responseFuture.completeExceptionally(error);
+//                    // 清理会话响应构建器
+//                    responseBuilders.remove(session.getId());
+//                    responseFutures.remove(session.getId());
+//                });
             glmClient.streamResponse(userMessage, context, history,
-                chunk -> {
-                    //实际的accept方法
-                    // 累积响应内容
-                    StringBuilder responseBuilder = responseBuilders.get(session.getId());
-                    if (responseBuilder != null) {
-                        responseBuilder.append(chunk);
-                    }
-                    sendResponseChunk(session, chunk);
-                },
-                error -> {
-                    // 处理错误并完成future
+                    content -> {
+                        // TODO 把每个chunk内容发送给前端 同时append到响应内容构建器
+                        StringBuilder responseBuilder = responseBuilders.get(session.getId());
+                        if (responseBuilder != null) {
+                            responseBuilder.append(content);
+
+                        }
+                        sendResponseChunk(session, content);
+                    },
+                    error -> {
+                        // 处理错误并完成future
                     handleError(session, error);
                     // 发送响应完成通知（错误情况）
                     sendCompletionNotification(session);
@@ -99,117 +120,137 @@ public class ChatHandler {
                     // 清理会话响应构建器
                     responseBuilders.remove(session.getId());
                     responseFutures.remove(session.getId());
-                });
+                    },
+                    () -> {
+                        //最终完成之后 进行后续处理
+                        StringBuilder responseBuilder = responseBuilders.get(session.getId());
+                        String content = responseBuilder.toString();
+                        //表示响应完成 发送响应完成通知
+                        sendCompletionNotification(session);
+
+                        //future发送完成通知，便于后续拓展编排 并持久化对话消息
+                        responseFuture.complete(content);
+                        updateConversationHistory(conversationId, userMessage, content);
+                        // 输出对话存储信息以便调试
+                        String redisKey = "user:" + userId + ":current_conversation";
+                        logger.info("对话存储信息 - Redis键: {}, 值: {}", redisKey, conversationId);
+
+                        // 清理会话响应构建器
+                        responseBuilders.remove(session.getId());
+                        responseFutures.remove(session.getId());
+                        logger.info("消息处理完成，用户ID: {}", userId);
+                    });
+
             
-            // 6. 启动一个后台任务检查并标记响应完成
-            new Thread(() -> {
-                try {
-                    // 等待最多30秒，给API足够的响应时间
-                    Thread.sleep(20000); // 先等待20秒钟，让API有时间开始响应 3秒都少了，因为是调用的api
-                    
-                    // 获取当前累积的响应内容
-                    StringBuilder responseBuilder = responseBuilders.get(session.getId());
-                    
-                    // 如果响应构建器存在并且已有内容，认为响应已完成
-                    if (responseBuilder != null) {
-                        // 记录最后2秒的响应变化，检测是否停止增长
-                        String lastResponse = responseBuilder.toString();
-                        int lastLength = lastResponse.length();
-                        
-                        Thread.sleep(2000); // 再等待2秒
-                        
-                        // 再次检查是否有新内容
-                        if (responseBuilder.length() == lastLength) {
-                            // 没有新内容，可以认为响应已完成
-                            responseFuture.complete(responseBuilder.toString());
-                            logger.info("GLM响应已完成，长度: {}", responseBuilder.length());
-                            
-                            // 发送响应完成通知
-                            sendCompletionNotification(session);
-                            
-                            // 更新对话历史
-                            String completeResponse = responseBuilder.toString();
-                            updateConversationHistory(conversationId, userMessage, completeResponse);
-                            
-                            // 输出对话存储信息以便调试
-                            String redisKey = "user:" + userId + ":current_conversation";
-                            logger.info("对话存储信息 - Redis键: {}, 值: {}", redisKey, conversationId);
-                            
-                            // 清理会话响应构建器
-                            responseBuilders.remove(session.getId());
-                            responseFutures.remove(session.getId());
-                            logger.info("消息处理完成，用户ID: {}", userId);
-                        } else {
-                            // 仍有新内容，继续等待
-                            logger.debug("响应仍在继续，等待完成...");
-                            // 再等待最多25秒
-                            for (int i = 0; i < 5; i++) {
-                                Thread.sleep(5000);
-                                if (responseBuilder != null) {
-                                    lastLength = responseBuilder.length();
-                                    // 再次检查2秒内是否有新内容
-                                    Thread.sleep(2000);
-                                    if (responseBuilder.length() == lastLength) {
-                                        // 没有新内容，可以认为响应已完成
-                                        responseFuture.complete(responseBuilder.toString());
-                                        
-                                        // 发送响应完成通知
-                                        sendCompletionNotification(session);
-                                        
-                                        // 更新对话历史
-                                        String completeResponse = responseBuilder.toString();
-                                        updateConversationHistory(conversationId, userMessage, completeResponse);
-                                        
-                                        // 输出对话存储信息以便调试
-                                        String redisKey = "user:" + userId + ":current_conversation";
-                                        logger.info("对话存储信息 - Redis键: {}, 值: {}", redisKey, conversationId);
-                                        
-                                        // 清理会话响应构建器
-                                        responseBuilders.remove(session.getId());
-                                        responseFutures.remove(session.getId());
-                                        logger.info("消息处理完成，用户ID: {}", userId);
-                                        return;
-                                    }
-                                }
-                            }
-                            
-                            // 如果经过多次检查仍未完成，强制完成
-                            if (!responseFuture.isDone()) {
-                                responseFuture.complete(responseBuilder.toString());
-                                
-                                // 发送响应完成通知
-                                sendCompletionNotification(session);
-                                
-                                // 更新对话历史
-                                String completeResponse = responseBuilder.toString();
-                                updateConversationHistory(conversationId, userMessage, completeResponse);
-                                
-                                // 输出对话存储信息以便调试
-                                String redisKey = "user:" + userId + ":current_conversation";
-                                logger.info("对话存储信息 - Redis键: {}, 值: {}", redisKey, conversationId);
-                                
-                                // 清理会话响应构建器
-                                responseBuilders.remove(session.getId());
-                                responseFutures.remove(session.getId());
-                                logger.info("消息处理强制完成，用户ID: {}", userId);
-                            }
-                        }
-                    } else {
-                        logger.warn("响应构建器为空，可能出现了错误，会话ID: {}", session.getId());
-                        RuntimeException exception = new RuntimeException("响应构建器为空");
-                        responseFuture.completeExceptionally(exception);
-                        // 发送错误消息
-                        handleError(session, exception);
-                    }
-                } catch (Exception e) {
-                    logger.error("检查响应完成时出错: {}", e.getMessage(), e);
-                    responseFuture.completeExceptionally(e);
-                    
-                    // 清理会话响应构建器
-                    responseBuilders.remove(session.getId());
-                    responseFutures.remove(session.getId());
-                }
-            }).start();
+//            // 6. 启动一个后台任务检查并标记响应完成
+//            new Thread(() -> {
+//                try {
+//                    // 等待最多30秒，给API足够的响应时间
+//                    Thread.sleep(20000); // 先等待20秒钟，让API有时间开始响应 3秒都少了，因为是调用的api
+//
+//                    // 获取当前累积的响应内容
+//                    StringBuilder responseBuilder = responseBuilders.get(session.getId());
+//
+//                    // 如果响应构建器存在并且已有内容，认为响应已完成
+//                    if (responseBuilder != null) {
+//                        // 记录最后2秒的响应变化，检测是否停止增长
+//                        String lastResponse = responseBuilder.toString();
+//                        int lastLength = lastResponse.length();
+//
+//                        Thread.sleep(2000); // 再等待2秒
+//
+//                        // 再次检查是否有新内容
+//                        if (responseBuilder.length() == lastLength) {
+//                            // 没有新内容，可以认为响应已完成
+//                            responseFuture.complete(responseBuilder.toString());
+//                            logger.info("GLM响应已完成，长度: {}", responseBuilder.length());
+//
+//                            // 发送响应完成通知
+//                            sendCompletionNotification(session);
+//
+//                            // 更新对话历史
+//                            String completeResponse = responseBuilder.toString();
+//                            updateConversationHistory(conversationId, userMessage, completeResponse);
+//
+//                            // 输出对话存储信息以便调试
+//                            String redisKey = "user:" + userId + ":current_conversation";
+//                            logger.info("对话存储信息 - Redis键: {}, 值: {}", redisKey, conversationId);
+//
+//                            // 清理会话响应构建器
+//                            responseBuilders.remove(session.getId());
+//                            responseFutures.remove(session.getId());
+//                            logger.info("消息处理完成，用户ID: {}", userId);
+//                        } else {
+//                            // 仍有新内容，继续等待
+//                            logger.debug("响应仍在继续，等待完成...");
+//                            // 再等待最多25秒
+//                            for (int i = 0; i < 5; i++) {
+//                                Thread.sleep(5000);
+//                                if (responseBuilder != null) {
+//                                    lastLength = responseBuilder.length();
+//                                    // 再次检查2秒内是否有新内容
+//                                    Thread.sleep(2000);
+//                                    if (responseBuilder.length() == lastLength) {
+//                                        // 没有新内容，可以认为响应已完成
+//                                        responseFuture.complete(responseBuilder.toString());
+//
+//                                        // 发送响应完成通知
+//                                        sendCompletionNotification(session);
+//
+//                                        // 更新对话历史
+//                                        String completeResponse = responseBuilder.toString();
+//                                        updateConversationHistory(conversationId, userMessage, completeResponse);
+//
+//                                        // 输出对话存储信息以便调试
+//                                        String redisKey = "user:" + userId + ":current_conversation";
+//                                        logger.info("对话存储信息 - Redis键: {}, 值: {}", redisKey, conversationId);
+//
+//                                        // 清理会话响应构建器
+//                                        responseBuilders.remove(session.getId());
+//                                        responseFutures.remove(session.getId());
+//                                        logger.info("消息处理完成，用户ID: {}", userId);
+//                                        return;
+//                                    }
+//                                }
+//                            }
+//
+//                            // 如果经过多次检查仍未完成，强制完成
+//                            if (!responseFuture.isDone()) {
+//                                responseFuture.complete(responseBuilder.toString());
+//
+//                                // 发送响应完成通知
+//                                sendCompletionNotification(session);
+//
+//                                // 更新对话历史
+//                                String completeResponse = responseBuilder.toString();
+//                                updateConversationHistory(conversationId, userMessage, completeResponse);
+//
+//                                // 输出对话存储信息以便调试
+//                                String redisKey = "user:" + userId + ":current_conversation";
+//                                logger.info("对话存储信息 - Redis键: {}, 值: {}", redisKey, conversationId);
+//
+//                                // 清理会话响应构建器
+//                                responseBuilders.remove(session.getId());
+//                                responseFutures.remove(session.getId());
+//                                logger.info("消息处理强制完成，用户ID: {}", userId);
+//                            }
+//                        }
+//                    } else {
+//                        logger.warn("响应构建器为空，可能出现了错误，会话ID: {}", session.getId());
+//                        RuntimeException exception = new RuntimeException("响应构建器为空");
+//                        responseFuture.completeExceptionally(exception);
+//                        // 发送错误消息
+//                        handleError(session, exception);
+//                    }
+//                } catch (Exception e) {
+//                    logger.error("检查响应完成时出错: {}", e.getMessage(), e);
+//                    responseFuture.completeExceptionally(e);
+//
+//                    // 清理会话响应构建器
+//                    responseBuilders.remove(session.getId());
+//                    responseFutures.remove(session.getId());
+//                }
+//            }).start();
             
         } catch (Exception e) {
             logger.error("处理消息错误: {}", e.getMessage(), e);
