@@ -279,7 +279,7 @@ public class ChatHandler {
         
         return conversationId;
     }
-
+    //TODO 加入动态决策并引入agent，主要是在这里统计下token的个数，超过阈值直接把sessionId和userId传给agent让他压缩构建高质量上下文
     private List<Map<String, String>> getConversationHistory(String conversationId) {
         String key = "conversation:" + conversationId;
         String json = redisTemplate.opsForValue().get(key);
@@ -288,14 +288,23 @@ public class ChatHandler {
                 logger.debug("会话 {} 没有历史记录", conversationId);
                 return new ArrayList<>();
             }
-            
             List<Map<String, String>> history = objectMapper.readValue(json, new TypeReference<List<Map<String, String>>>() {});
-            logger.debug("读取到会话 {} 的 {} 条历史记录", conversationId, history.size());
+            //esimate token 大小
+            int totalTokens = history.stream()
+                .map(msg -> estimateTokens(msg.get("content")))
+                .reduce(0, Integer::sum);
+            logger.debug("会话 {} 的历史记录总token数: {}", conversationId, totalTokens);
+            // logger.debug("读取到会话 {} 的 {} 条历史记录", conversationId, history.size());
             return history;
         } catch (JsonProcessingException e) {
             logger.error("解析对话历史出错: {}, 会话ID: {}", e.getMessage(), conversationId, e);
             return new ArrayList<>();
         }
+    }
+    //初步估算token大小
+    private int estimateTokens(String text) {
+    if (text == null) return 0;
+    return (int) Math.ceil(text.length() / 4.0);  // 粗略估算：4字符≈1token
     }
 
     private void updateConversationHistory(String conversationId, String userMessage, String response) {
