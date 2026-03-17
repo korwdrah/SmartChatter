@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 
 /**
  * 聊天处理服务
@@ -45,13 +46,17 @@ public class ChatHandler {
     private final Map<String, CompletableFuture<String>> responseFutures = new ConcurrentHashMap<>();
     // 停止标志 - 简单方案
     private final Map<String, Boolean> stopFlags = new ConcurrentHashMap<>();
+    //构建上下文和RAG的线程池
+    private final Executor charExecutor;
 
     public ChatHandler(RedisTemplate<String, String> redisTemplate,
                       HybridSearchService searchService,
-                      GLMClient glmClient) {
+                      GLMClient glmClient,
+                      Executor charExecutor) {
         this.redisTemplate = redisTemplate;
         this.searchService = searchService;
         this.glmClient = glmClient;
+        this.charExecutor = charExecutor;
         this.objectMapper = new ObjectMapper();
     }
 
@@ -69,11 +74,27 @@ public class ChatHandler {
             responseFutures.put(session.getId(), responseFuture);
             
             // 2. 获取对话历史
-            List<Map<String, String>> history = getConversationHistory(conversationId);
-            logger.debug("获取到 {} 条历史对话", history.size());
+            // List<Map<String, String>> history = getConversationHistory(conversationId);
+            // logger.debug("获取到 {} 条历史对话", history.size());
+            CompletableFuture<List<Map<String, String>>> historyFuture = CompletableFuture.supplyAsync(
+                () -> getConversationHistory(conversationId),
+                charExecutor
+            );
             
             // 3. 执行带权限过滤的混合搜索
-            List<SearchResult> searchResults = searchService.searchWithPermission(userMessage, userId, 5);
+            // List<SearchResult> searchResults = searchService.searchWithPermission(userMessage, userId, 5);
+            // logger.debug("搜索结果数量: {}", searchResults.size());
+            CompletableFuture<List<SearchResult>> searchFuture = CompletableFuture.supplyAsync(
+                () -> searchService.searchWithPermission(userMessage, userId, 5),
+                charExecutor
+            );
+
+            //等到两个结果完成
+            CompletableFuture.allOf(historyFuture,searchFuture).join();
+            //拿到结果同步组装即可
+            List<Map<String, String>> history = historyFuture.join();
+            List<SearchResult> searchResults = searchFuture.join();
+            logger.debug("获取到 {} 条历史对话", history.size());
             logger.debug("搜索结果数量: {}", searchResults.size());
             
             // 4. 构建上下文
