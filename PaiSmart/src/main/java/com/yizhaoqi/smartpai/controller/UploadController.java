@@ -126,7 +126,7 @@ public class UploadController {
             LogUtils.logFileOperation(userId, "UPLOAD_CHUNK", fileName, fileMd5, "PROCESSING");
         
             uploadService.uploadChunk(fileMd5, chunkIndex, totalSize, fileName, file, orgTag, isPublic, userId);
-            
+            //通过redis位图获取已上传的chunk列表（0是已经上传了的）
             List<Integer> uploadedChunks = uploadService.getUploadedChunks(fileMd5, userId);
             int actualTotalChunks = uploadService.getTotalChunks(fileMd5, userId);
             double progress = calculateProgress(uploadedChunks, actualTotalChunks);
@@ -293,6 +293,7 @@ public class UploadController {
             LogUtils.logBusiness("MERGE_FILE", userId, "发送文件处理任务到Kafka(事务): topic=%s, fileMd5=%s, fileName=%s", 
                     kafkaConfig.getFileProcessingTopic(), request.fileMd5(), request.fileName());
             kafkaTemplate.executeInTransaction(kt -> {
+                //在事务中发送消息
                 kt.send(kafkaConfig.getFileProcessingTopic(), task);
                 return true;
             });

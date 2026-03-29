@@ -23,7 +23,7 @@ public class ThreadPoolConfig {
             executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
             // 线程空闲时间（秒）
             executor.setKeepAliveSeconds(60);
-            // 等待任务完成后才关闭线程池
+            // 等待任务完成后才关闭线程池 不需要手动关闭 非常优雅
             executor.setWaitForTasksToCompleteOnShutdown(true);
             // 初始化线程池
             executor.initialize();
