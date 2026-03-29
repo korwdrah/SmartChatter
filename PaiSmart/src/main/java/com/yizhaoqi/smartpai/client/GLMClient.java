@@ -17,7 +17,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 @Service
@@ -56,8 +55,11 @@ public class GLMClient {
                 .bodyValue(request)
                 .retrieve()
                 .bodyToFlux(String.class)
+                //设置30秒超时
+                .timeout(Duration.ofSeconds(30))
                 //重试机制
                 .retryWhen(Retry.fixedDelay(3, Duration.ofSeconds(1)))
+                .onBackpressureBuffer(100) //100个chunk足够了
                 //当响应数据块达到结束标记时，取消订阅 直接执行onClose方法
                 .takeWhile(chunk -> !"[DONE]".equals(chunk))
                 //提取内容
