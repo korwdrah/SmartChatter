@@ -258,6 +258,7 @@ public class ParseService {
 
         for (String sentence : sentences) {
             if (currentChunk.length() + sentence.length() > chunkSize) {
+                //单个句子太长 就直接把当前的chunk保存
                 if (currentChunk.length() > 0) {
                     chunks.add(currentChunk.toString().trim());
                     currentChunk = new StringBuilder();
@@ -282,7 +283,7 @@ public class ParseService {
     }
 
     /**
-     * 使用HanLP智能分割超长句子，中文按语义切割
+     * 使用HanLP智能分割超长句子，中文按语义切割 专门针对长句子进行单词分割
      */
     private List<String> splitLongSentence(String sentence, int chunkSize) {
         List<String> chunks = new ArrayList<>();

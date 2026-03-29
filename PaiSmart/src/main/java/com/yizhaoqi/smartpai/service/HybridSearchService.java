@@ -85,29 +85,13 @@ public class HybridSearchService {
 
             SearchResponse<EsDocument> response = esClient.search(s -> {
                         s.index("knowledge_base");
-                        // KNN 召回
+                        // KNN 召回 都是preFilter
                         int recallK = topK * 30; // KNN 召回窗口
                         s.knn(kn -> kn
                                 .field("vector")
                                 .queryVector(queryVector)
                                 .k(recallK)
                                 .numCandidates(recallK)
-                                .filter(f -> f.bool(bf -> bf
-                                        .should(s1 -> s1.term(t -> t.field("userId").value(userDbId)))
-                                        .should(s2 -> s2.term(t -> t.field("isPublic").value(true)))
-                                        .should(s3 -> {
-                                            if (userEffectiveTags.isEmpty()) {
-                                                return s3.matchNone(mn -> mn);
-                                            } else if (userEffectiveTags.size() == 1) {
-                                                return s3.term(t -> t.field("orgTag").value(userEffectiveTags.get(0)));
-                                            } else {
-                                                return s3.bool(inner -> {
-                                                    userEffectiveTags.forEach(tag -> inner.should(sh2 -> sh2.term(t -> t.field("orgTag").value(tag))));
-                                                    return inner;
-                                                });
-                                            }
-                                        })
-                                ))
                         );
                         // 必须命中关键词 + 权限过滤
                         s.query(q -> q.bool(b -> b

@@ -68,7 +68,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
                     logger.debug("JSON解析失败，当作普通消息处理: {}", jsonParseError.getMessage());
                 }
             }
-            
+
             // 普通聊天消息处理（保持向下兼容）
             chatHandler.processMessage(userId, payload, session);
             
