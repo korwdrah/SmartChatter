@@ -1,6 +1,15 @@
 server:
   port: 8081 # 指定端口号
 spring:
+  ai:
+    openai:
+      base-url: https://open.bigmodel.cn/api/paas/v4
+      api-key: ${glm.api.key}
+      chat:
+        completions-path: /chat/completions
+        options:
+          model: glm-4.7-flashx
+          temperature: 0.3
   datasource:
     url: jdbc:mysql://localhost:3306/PaiSmart?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
     username: root
@@ -137,3 +146,34 @@ ai:
     temperature: 0.3
     max-tokens: 2000
     top-p: 0.9
+
+thread-pool:
+  chat:
+    core-size: 8
+    max-size: 32
+    queue-capacity: 200
+  agent:
+    core-size: 4
+    max-size: 16
+    queue-capacity: 50
+  llm:
+    core-size: 8
+    max-size: 32
+    queue-capacity: 200
+  tool:
+    core-size: 8
+    max-size: 16
+    queue-capacity: 100
+
+agent:
+  enabled: true
+  timeout:
+    total: 15000
+    per-tool: 5000
+    classify: 3000
+  semaphore:
+    max-concurrent: 20
+    acquire-timeout: 3000
+  planner:
+    max-sub-queries: 4
+    history-messages: 5
