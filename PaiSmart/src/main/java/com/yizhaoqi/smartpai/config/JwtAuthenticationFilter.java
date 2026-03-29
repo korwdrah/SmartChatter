@@ -72,9 +72,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 // 设置用户认证信息
                 if (username != null && !username.isEmpty()) {
                     UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+                    //创建认证对象  通过service把用户信息封装好的UserDetails对象和权限封装到token中
                     UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                             userDetails, null, userDetails.getAuthorities());
+                    //附加请求的元数据信息
                     authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                    //把认证信息保存到Spring Security的上下文信息中，整个请求链都能拿到
                     SecurityContextHolder.getContext().setAuthentication(authentication);
                 }
             }
