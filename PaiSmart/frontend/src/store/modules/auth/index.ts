@@ -183,6 +183,11 @@ export const useAuthStore = defineStore(SetupStoreId.Auth, () => {
   async function logout() {
     const { error } = await fetchLogout();
     if (!error) {
+      // 关闭 WebSocket 连接，防止新用户登录后使用旧连接
+      const chatStore = useChatStore();
+      chatStore.wsClose();
+      chatStore.$reset();
+
       resetStore();
       useKnowledgeBaseStore().$reset();
     }
