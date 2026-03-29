@@ -100,6 +100,8 @@ public class KafkaConfig {
         ConcurrentKafkaListenerContainerFactory<String, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
         factory.setCommonErrorHandler(errorHandler);
+        //消费者实例3个，partition3个
+        factory.setConcurrency(3);
         return factory;
     }
 }

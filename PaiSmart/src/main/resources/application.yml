@@ -42,6 +42,7 @@ spring:
       properties:
         spring.json.trusted.packages: "*" # 允许反序列化的包
         client.dns.lookup: use_all_dns_ips
+      enable-auto-commit: false
     topic:
       file-processing: file-processing-topic1 # 新增的 Topic 配置
       dlt: file-processing-dlt # 死信队列主题

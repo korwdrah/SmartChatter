@@ -9,6 +9,7 @@ import io.minio.errors.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Service;
 
 import java.io.*;
@@ -33,7 +34,7 @@ public class FileProcessingConsumer {
     }
 
     @KafkaListener(topics = "#{kafkaConfig.getFileProcessingTopic()}", groupId = "#{kafkaConfig.getFileProcessingGroupId()}")
-    public void processTask(FileProcessingTask task) {
+    public void processTask(FileProcessingTask task, Acknowledgment ack) {
         log.info("Received task: {}", task);
         log.info("文件权限信息: userId={}, orgTag={}, isPublic={}", 
                 task.getUserId(), task.getOrgTag(), task.isPublic());
@@ -61,6 +62,8 @@ public class FileProcessingConsumer {
             vectorizationService.vectorize(task.getFileMd5(), 
                     task.getUserId(), task.getOrgTag(), task.isPublic());
             log.info("向量化完成，fileMd5: {}", task.getFileMd5());
+            //业务完成之后手动提交
+            ack.acknowledge();
         } catch (Exception e) {
             log.error("Error processing task: {}", task, e);
             // 抛出异常让 Kafka 的 DefaultErrorHandler 捕获并触发重试 / 死信
