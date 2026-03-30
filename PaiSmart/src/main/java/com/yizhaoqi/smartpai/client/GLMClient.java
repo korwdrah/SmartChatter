@@ -48,7 +48,16 @@ public class GLMClient {
                                List<Map<String, String>> history,
                                Consumer<String> onChunk,
                                Consumer<Throwable> onError, Runnable onClose) {
-        Map<String, Object> request = buildRequest(userMessage, context, history);
+        streamResponse(userMessage, context, history, false, onChunk, onError, onClose);
+    }
+
+    public void streamResponse(String userMessage,
+                               String context,
+                               List<Map<String, String>> history,
+                               boolean direct,
+                               Consumer<String> onChunk,
+                               Consumer<Throwable> onError, Runnable onClose) {
+        Map<String, Object> request = buildRequest(userMessage, context, history, direct);
         webClient.post()
                 .uri("/chat/completions")
                 .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
@@ -112,15 +121,16 @@ public class GLMClient {
         }
     }
 
-    private Map<String, Object> buildRequest(String userMessage, String context, List<Map<String, String>> history) {
-        logger.info("构建请求，用户消息：{}，上下文长度：{}，历史消息数：{}",
+    private Map<String, Object> buildRequest(String userMessage, String context, List<Map<String, String>> history, boolean direct) {
+        logger.info("构建请求，用户消息：{}，上下文长度：{}，历史消息数：{}，direct={}",
                 userMessage,
                 context != null ? context.length() : 0,
-                history != null ? history.size() : 0);
+                history != null ? history.size() : 0,
+                direct);
 
         Map<String, Object> request = new HashMap<>();
         request.put("model", model);
-        request.put("messages", buildMessages(userMessage, context, history));
+        request.put("messages", buildMessages(userMessage, context, history, direct));
         request.put("stream", true);
         //生成参数
         AiProperties.Generation generation = aiProperties.getGeneration();
@@ -136,37 +146,45 @@ public class GLMClient {
         return request;
     }
 
-    private List<Map<String, String>> buildMessages(String userMessage, String context, List<Map<String, String>> history) {
+    private List<Map<String, String>> buildMessages(String userMessage, String context, List<Map<String, String>> history, boolean direct) {
         List<Map<String, String>> messages = new ArrayList<>();
         AiProperties.Prompt promptCfg = aiProperties.getPrompt();
 
-        //1.构建System指令（rule + refer）
-        StringBuilder sysBuilder = new StringBuilder();
-        String rules = promptCfg.getRules();
-        if (rules != null) {
-            sysBuilder.append(rules).append("\n\n");
-        }
-        String refStart = promptCfg.getRefStart() != null ? promptCfg.getRefStart() : "<<REF>>";
-        String refEnd = promptCfg.getRefEnd() != null ? promptCfg.getRefEnd() : "<<END>>";
-        sysBuilder.append(refStart).append("\n");
+        // direct 路由使用轻量 system prompt
+        if (direct) {
+            String directRules = promptCfg.getDirectRules();
+            String systemContent = (directRules != null && !directRules.isBlank()) ? directRules : "你是一个友好的AI助手，请自然回复。";
+            messages.add(Map.of("role", "system", "content", systemContent));
+        } else {
+            //1.构建System指令（rule + refer）
+            StringBuilder sysBuilder = new StringBuilder();
+            String rules = promptCfg.getRules();
+            if (rules != null) {
+                sysBuilder.append(rules).append("\n\n");
+            }
+            String refStart = promptCfg.getRefStart() != null ? promptCfg.getRefStart() : "<<REF>>";
+            String refEnd = promptCfg.getRefEnd() != null ? promptCfg.getRefEnd() : "<<END>>";
+            sysBuilder.append(refStart).append("\n");
 
-        if(context != null && !context.isEmpty()) {
-            sysBuilder.append(context).append("\n");
-        }
-        else {
-            //占位
-            String noResult = promptCfg.getNoResultText() != null ? promptCfg.getNoResultText() : "（本轮无检索结果）";
-            sysBuilder.append(noResult).append("\n");
+            if(context != null && !context.isEmpty()) {
+                sysBuilder.append(context).append("\n");
+            }
+            else {
+                //占位
+                String noResult = promptCfg.getNoResultText() != null ? promptCfg.getNoResultText() : "（本轮无检索结果）";
+                sysBuilder.append(noResult).append("\n");
+            }
+
+            sysBuilder.append(refEnd);
+            //日志
+            String sysContent = sysBuilder.toString();
+            messages.add(Map.of(
+                    "role", "system",
+                    "content", sysContent
+            ));
+            logger.debug("添加了系统消息，长度: {}", sysContent.length());
         }
 
-        sysBuilder.append(refEnd);
-        //日志
-        String systemContent = sysBuilder.toString();
-        messages.add(Map.of(
-                "role", "system",
-                "content", systemContent
-        ));
-        logger.debug("添加了系统消息，长度: {}", systemContent.length());
         //2.追加历史消息
         if(history != null && !history.isEmpty()){
             messages.addAll(history);
