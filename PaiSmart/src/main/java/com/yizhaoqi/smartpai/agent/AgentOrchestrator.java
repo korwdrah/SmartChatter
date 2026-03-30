@@ -1,6 +1,8 @@
 package com.yizhaoqi.smartpai.agent;
 
+import com.yizhaoqi.smartpai.agent.tool.EvaluateResultsTool;
 import com.yizhaoqi.smartpai.agent.tool.KnowledgeSearchTool;
+import com.yizhaoqi.smartpai.agent.tool.QueryRewriteTool;
 import com.yizhaoqi.smartpai.entity.SearchResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -9,6 +11,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
@@ -24,6 +27,9 @@ public class AgentOrchestrator {
     private final KnowledgeSearchTool knowledgeSearchTool;
     private final long totalTimeoutMs;
     private final long acquireTimeoutMs;
+    private final EvaluateResultsTool evaluateResultsTool;
+    private final QueryRewriteTool queryRewriteTool;
+    private final int maxRetryCount;
 
     public AgentOrchestrator(
             @Qualifier("agentPool") Executor agentPool,
@@ -32,7 +38,10 @@ public class AgentOrchestrator {
             KnowledgeSearchTool knowledgeSearchTool,
             @Value("${agent.semaphore.max-concurrent:20}") int maxConcurrent,
             @Value("${agent.semaphore.acquire-timeout:3000}") long acquireTimeoutMs,
-            @Value("${agent.timeout.total:15000}") long totalTimeoutMs) {
+            @Value("${agent.timeout.total:15000}") long totalTimeoutMs,
+            EvaluateResultsTool evaluateResultsTool,
+            QueryRewriteTool queryRewriteTool,
+            @Value("${agent.evaluator.max-retry:1}") int maxRetryCount) {
         // 20个并发
         this.agentSemaphore = new Semaphore(maxConcurrent);
         this.agentPool = agentPool;
@@ -41,6 +50,9 @@ public class AgentOrchestrator {
         this.knowledgeSearchTool = knowledgeSearchTool;
         this.acquireTimeoutMs = acquireTimeoutMs;
         this.totalTimeoutMs = totalTimeoutMs;
+        this.evaluateResultsTool = evaluateResultsTool;
+        this.queryRewriteTool = queryRewriteTool;
+        this.maxRetryCount = maxRetryCount;
     }
 
     /**
@@ -116,9 +128,59 @@ public class AgentOrchestrator {
                 allResults = allResults.subList(0, totalBudget);
             }
 
+            // Step 4: 评估结果质量（最多补充检索 maxRetryCount 次）
+            int retryCount = 0;
+            while (retryCount < maxRetryCount) {
+                // 构建结果摘要供评估器使用（前10条，每条截断到100字符）
+                StringBuilder resultsSummary = new StringBuilder();
+                for (int i = 0; i < Math.min(allResults.size(), 10); i++) {
+                    SearchResult r = allResults.get(i);
+                    String text = r.getTextContent();
+                    if (text.length() > 100) text = text.substring(0, 100) + "...";
+                    resultsSummary.append("[").append(i + 1).append("] ").append(text).append("\n");
+                }
+
+                EvaluateResultsTool.EvaluationResult eval =
+                    evaluateResultsTool.evaluate(message, resultsSummary.toString());
+
+                if (eval.sufficient()) {
+                    logger.info("结果评估通过, 无需补充检索");
+                    break;
+                }
+
+                retryCount++;
+                logger.info("结果不足, 启动第{}次补充检索, gap={}", retryCount, eval.gap());
+
+                // 改写查询
+                List<String> rewrittenQueries = queryRewriteTool.rewrite(message, eval.gap());
+
+                // 并行执行补充检索
+                List<CompletableFuture<List<SearchResult>>> supplementFutures = rewrittenQueries.stream()
+                    .map(query -> CompletableFuture.supplyAsync(
+                        () -> knowledgeSearchTool.search(query, 3), toolPool))
+                    .collect(Collectors.toList());
+
+                CompletableFuture.allOf(supplementFutures.toArray(new CompletableFuture[0])).join();
+
+                // 合并补充结果（去重）
+                Set<String> existingKeys = allResults.stream()
+                    .map(r -> r.getFileMd5() + ":" + r.getChunkId())
+                    .collect(Collectors.toSet());
+
+                for (CompletableFuture<List<SearchResult>> f : supplementFutures) {
+                    for (SearchResult r : f.join()) {
+                        String key = r.getFileMd5() + ":" + r.getChunkId();
+                        if (!existingKeys.contains(key)) {
+                            allResults.add(r);
+                            existingKeys.add(key);
+                        }
+                    }
+                }
+            }
+
             long totalLatency = System.currentTimeMillis() - startTime;
-            logger.info("Agent执行完成: totalLatency={}ms, subQueries={}, totalResults={}",
-                totalLatency, subQueries.size(), allResults.size());
+            logger.info("Agent执行完成: totalLatency={}ms, subQueries={}, totalResults={}, evalRetries={}",
+                totalLatency, subQueries.size(), allResults.size(), retryCount);
 
             return new AgentResult(allResults);
 
