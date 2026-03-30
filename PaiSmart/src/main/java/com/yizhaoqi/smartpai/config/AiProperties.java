@@ -25,6 +25,8 @@ public class AiProperties {
         private String refEnd;
         /** 无检索结果时的占位文案 */
         private String noResultText;
+        /** 闲聊（direct 路由）专用 system prompt */
+        private String directRules;
     }
 
     @Data

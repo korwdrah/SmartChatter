@@ -142,6 +142,8 @@ ai:
     ref-start: "<<REF>>"
     ref-end: "<<END>>"
     no-result-text: "（本轮无检索结果）"
+    direct-rules: |
+      你是一个友好、专业的AI助手。用户在和你闲聊或打招呼，请自然、简洁地回复即可，不需要引用任何文档。
   generation:
     temperature: 0.3
     max-tokens: 2000
