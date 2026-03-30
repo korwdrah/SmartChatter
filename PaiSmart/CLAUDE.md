@@ -4,239 +4,111 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-PaiSmart (派聪明) is an enterprise-grade AI knowledge management system built with RAG (Retrieval-Augmented Generation) technology. It provides intelligent document processing and retrieval capabilities using a modern tech stack including Spring Boot, Vue 3, Elasticsearch, and AI services.
+PaiSmart (派聪明) is an enterprise-grade RAG (Retrieval-Augmented Generation) knowledge management system. Users upload documents, which are parsed, chunked, vectorized, and indexed into Elasticsearch. Users then chat via WebSocket, and the system retrieves relevant chunks to generate AI-powered responses grounded in their documents.
 
-## Development Environment Setup
+## Common Commands
 
-### Prerequisites
-- Java 17
-- Maven 3.8.6+
-- Node.js 18.20.0+
-- pnpm 8.7.0+
-- MySQL 8.0
-- Elasticsearch 8.10.0
-- MinIO 8.5.12
-- Kafka 3.2.1
-- Redis 7.0.11
-- Docker (optional for services)
-
-### Quick Start with Docker
+### Backend (run from project root)
 ```bash
-# Start all services
-cd docs && docker-compose up -d
-
-# Backend
-mvn spring-boot:run
-
-# Frontend
-cd frontend && pnpm install && pnpm dev
+mvn spring-boot:run                              # Start with default profile
+mvn spring-boot:run -Dspring-boot.run.profiles=dev # Start with dev profile
+mvn clean package                                  # Build JAR
+mvn test                                           # Run all tests
+mvn test -Dtest=UserServiceTest                    # Run single test class
+mvn test -Dtest=UserServiceTest#testMethodName     # Run single test method
+mvn clean verify                                   # Build with integration tests
 ```
 
-## Common Development Commands
-
-### Backend (Spring Boot)
+### Frontend (run from frontend/)
 ```bash
-# Run application
-mvn spring-boot:run
-
-# Build
-mvn clean package
-
-# Test
-mvn test
-
-# Run with specific profile
-mvn spring-boot:run -Dspring-boot.run.profiles=dev
+pnpm install    # Install dependencies
+pnpm dev        # Start dev server
+pnpm build      # Production build
+pnpm typecheck  # TypeScript type checking
+pnpm lint       # ESLint
 ```
 
-### Frontend (Vue 3 + TypeScript)
+### Infrastructure
 ```bash
-# Install dependencies
-cd frontend && pnpm install
-
-# Development server
-pnpm dev
-
-# Build for production
-pnpm build
-
-# Type checking
-pnpm typecheck
-
-# Linting
-pnpm lint
-
-# Preview build
-pnpm preview
+cd docs && docker-compose up -d   # Start MySQL, Redis, ES, Kafka, MinIO
 ```
 
-## Architecture Overview
+## Architecture
 
-### Backend Structure
-```
-src/main/java/com/yizhaoqi/smartpai/
-├── SmartPaiApplication.java      # Main application entry
-├── client/                       # External API clients (DeepSeek, Embedding)
-├── config/                       # Configuration classes (Security, JWT, etc.)
-├── consumer/                     # Kafka consumers for async processing
-├── controller/                   # REST API endpoints
-├── entity/                       # JPA entities
-├── exception/                    # Custom exceptions
-├── handler/                      # WebSocket handlers
-├── model/                        # Domain models
-├── repository/                   # Data access layer
-├── service/                      # Business logic layer
-└── utils/                        # Utility classes
-```
+### RAG Pipeline (the core of the system)
 
-### Frontend Structure
-```
-frontend/src/
-├── assets/                       # Static assets (SVG, images)
-├── components/                   # Reusable Vue components
-├── layouts/                      # Page layouts
-├── router/                       # Vue Router configuration
-├── service/                      # API integration
-├── store/                        # Pinia state management
-├── views/                        # Page components
-└── utils/                        # Utility functions
-```
+Five stages, each in a separate service:
 
-## Key Components
+1. **Ingestion**: `UploadController` → `UploadService` (chunked upload with MD5 dedup, stores to MinIO) → publishes to Kafka topic `file-processing-topic1`
+2. **Parsing**: `FileProcessingConsumer` (Kafka) → `ParseService` → Apache Tika extraction → semantic chunking (paragraph-aware, HanLP Chinese segmentation for long sentences, 512-char chunks) → stores `DocumentVector` entities in MySQL
+3. **Vectorization**: `VectorizationService` → DashScope embedding-3 API (batch 10 chunks/request, 2048-dim vectors) → indexes into Elasticsearch
+4. **Retrieval**: `HybridSearchService` → query embedding → KNN search (top 150 candidates) → BM25 rescoring → multi-tenant permission filter → ranked results
+5. **Generation**: `ChatHandler` → builds prompt (system rules + `<<REF>>...<<END>>` reference block + last 20 messages) → `GLMClient` (streaming) → WebSocket response
 
-### Core Services
-- **DocumentService**: Handles document upload, parsing, and management
-- **ElasticsearchService**: Manages document indexing and search
-- **VectorizationService**: Converts text to embeddings using AI models
-- **ChatHandler**: Processes AI chat interactions with RAG
-- **UserService**: User authentication and management
-- **ConversationService**: Chat history and session management
+### Async Processing (Kafka)
 
-### AI Integration
-- **DeepSeek API**: Primary LLM for chat responses
-- **Embedding API**: Text-embedding-v4 for document vectorization
-- **RAG Pipeline**: Document → Chunk → Embedding → Search → Response
+- **Producer**: `UploadService` publishes after file merge in MinIO
+- **Consumer**: `FileProcessingConsumer` downloads from MinIO, triggers parse + vectorize
+- **DLQ**: Failed messages go to `file-processing-dlt` topic
+- **Consumer group**: `file-processing-group`
 
-### Multi-tenant Architecture
-- **Organization Tags**: Supports multi-tenant isolation
-- **Permission System**: Public/private document access control
-- **User-Organization Mapping**: Flexible user-to-org relationships
+### Multi-Tenant Access Control
 
-## Configuration Files
+Documents have three visibility levels: owner's own, public, and organization-scoped. Organization tags support hierarchical inheritance (e.g., "company/team/subteam"). Permission filtering is applied at both the search query level (ES filter) and the document access level (repository queries). `RedisRepository` caches org tag resolution.
 
-### Backend Configuration
-- `application.yml`: Main configuration with database, Redis, Kafka, AI services
-- `application-dev.yml`: Development-specific settings
-- `application-docker.yml`: Docker deployment settings
+### Security
 
-### Frontend Configuration
-- `vite.config.ts`: Vite build configuration
-- `tsconfig.json`: TypeScript configuration
-- `pnpm-workspace.yaml`: Workspace configuration for monorepo
+- JWT tokens via `JwtAuthenticationFilter`, validated on every request
+- `OrgTagAuthorizationFilter` enforces organization-level data isolation
+- WebSocket auth: JWT passed in URL path (`ws://host/chat/{jwtToken}`)
+- Roles: USER, ADMIN (method-level via `@PreAuthorize`)
+- User identity injected via `@RequestAttribute("userId")` in controllers
 
-## Database Schema
+### WebSocket Chat
 
-The application uses MySQL as the primary database with JPA/Hibernate for ORM. Key entities include:
-- `User`: User accounts and authentication
-- `FileUpload`: Document metadata and storage info
-- `Conversation`: Chat sessions and history
-- `OrganizationTag`: Multi-tenant organization structure
-- `ChunkInfo`: Document chunks for vector search
+- `ChatWebSocketHandler` manages per-user sessions
+- Client connects to `/chat/{jwtToken}`, sends JSON messages
+- Responses stream as `{ chunk: "text" }` frames, completed with `{ type: "completion" }`
+- Stop generation via internal command tokens
+
+### Key Services
+
+| Service | Role |
+|---------|------|
+| `ChatHandler` | Orchestrates the full RAG pipeline for chat: retrieval → prompt building → streaming LLM response |
+| `ParseService` | Document parsing with streaming Tika extraction and semantic chunking (monitors JVM memory at 80% threshold) |
+| `HybridSearchService` | Combines KNN vector search + BM25 keyword rescoring with permission filtering |
+| `VectorizationService` | Batch embedding generation and ES indexing |
+| `UploadService` | Chunked file upload with MD5 dedup, MinIO storage, Kafka publish |
+| `DocumentService` | Document CRUD, coordinates deletion across MinIO + MySQL + ES |
+
+### AI Clients (`client/`)
+
+- `GLMClient`: Primary LLM (DeepSeek/GLM), streaming via WebClient/WebFlux `Flux<String>`
+- `EmbeddingClient`: DashScope embedding-3 API for text vectorization
+- Generation params configured in `application.yml` under `ai.generation` (temperature: 0.3, max-tokens: 2000)
+
+### Entity/Model Split
+
+- `model/`: JPA entities mapped to MySQL (`FileUpload`, `DocumentVector`, `User`, `Conversation`, `OrganizationTag`)
+- `entity/`: Elasticsearch document models (`EsDocument`) and search result DTOs
+
+### Frontend
+
+Vue 3 + TypeScript + Naive UI + Pinia + UnoCSS. WebSocket chat is in the `/chat` view. API calls go through `service/` layer with axios. State managed in Pinia stores under `store/`.
+
+## Configuration Profiles
+
+- `application.yml`: Base config (DB, Redis, Kafka, MinIO, ES, AI API keys, JWT secret)
+- `application-dev.yml`: Local development overrides
+- `application-docker.yml`: Docker deployment overrides
+
+AI prompt engineering is configured under `ai.prompt` in YAML (system rules, reference delimiters `<<REF>>`/`<<END>>`, no-result fallback text).
 
 ## External Dependencies
 
-### Services
-- **Elasticsearch 8.10.0**: Document search and vector storage
-- **Kafka 3.2.1**: Message queue for async file processing
-- **Redis 7.0.11**: Caching and session management
-- **MinIO 8.5.12**: File storage service
-- **MySQL 8.0**: Primary database
+MySQL 8.0 | Redis 7.0.11 | Elasticsearch 8.10.0 | Kafka 3.2.1 | MinIO 8.5.12 | DashScope Embedding API | DeepSeek/GLM API
 
-### AI Services
-- **DeepSeek API**: LLM for generating responses
-- **DashScope Embedding**: Text-embedding-v4 for document vectorization
+## Tech Stack
 
-## Development Workflow
-
-### Adding New Features
-1. Backend: Create entity → repository → service → controller
-2. Frontend: Create API service → store module → Vue component → router configuration
-3. Update database schema if needed (JPA auto-generates DDL)
-4. Test with both unit and integration tests
-
-### API Development
-- Follow RESTful conventions
-- Use proper HTTP status codes
-- Implement authentication/authorization via JWT
-- Add request validation and error handling
-
-### Frontend Development
-- Use Vue 3 Composition API with TypeScript
-- Follow established component patterns in `/src/components/`
-- Use Pinia for state management
-- Implement proper TypeScript types for API responses
-
-## Testing
-
-### Backend Testing
-```bash
-# Run all tests
-mvn test
-
-# Run specific test class
-mvn test -Dtest=UserServiceTest
-
-# Run with coverage
-mvn clean verify
-```
-
-### Frontend Testing
-```bash
-# Type checking
-pnpm typecheck
-
-# Linting
-pnpm lint
-
-# Build verification
-pnpm build
-```
-
-## Deployment
-
-### Docker Deployment
-```bash
-# Build backend
-mvn clean package
-
-# Build frontend
-cd frontend && pnpm build
-
-# Start services
-cd docs && docker-compose up -d
-```
-
-### Environment Variables
-Key configuration variables that should be set in production:
-- `JWT_SECRET_KEY`: JWT signing secret
-- `DEEPSEEK_API_KEY`: DeepSeek API credentials
-- `EMBEDDING_API_KEY`: Embedding service API key
-- Database credentials and service URLs
-
-## Security Considerations
-
-- JWT-based authentication with Spring Security
-- Role-based access control (admin/user)
-- Organization-level data isolation
-- File upload validation and size limits
-- CORS configuration for frontend integration
-- Input validation and sanitization
-
-## Performance Considerations
-
-- Elasticsearch for efficient document search
-- Redis caching for frequently accessed data
-- Kafka for asynchronous file processing
-- File chunking for large document processing
-- Vector embeddings for semantic search
-- Connection pooling for database and external services
+Spring Boot 3.4.2 (Java 17) | Spring Data JPA | Spring Security + JWT | Spring WebFlux | Apache Tika 2.9.1 | HanLP | Lombok | Vue 3.5 | Vite 6.3 | Naive UI | Pinia 3.0 | UnoCSS | pnpm
