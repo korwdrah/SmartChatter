@@ -179,3 +179,5 @@ agent:
   planner:
     max-sub-queries: 4
     history-messages: 5
+  evaluator:
+    max-retry: 1
