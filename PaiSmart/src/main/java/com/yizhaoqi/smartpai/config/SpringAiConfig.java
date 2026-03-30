@@ -46,4 +46,31 @@ public class SpringAiConfig {
             .defaultOptions(ChatOptions.builder().temperature(0.1).build())
             .build();
     }
+
+    /**
+     * 结果评估器：判断检索结果是否充分
+     */
+    @Bean
+    public ChatClient evaluatorChatClient(ChatModel chatModel) {
+        return ChatClient.builder(chatModel)
+            .defaultSystem("你是一个检索结果质量评估器。判断给定的搜索结果是否能充分回答用户的问题。\n"
+                         + "只回复 JSON 格式: {\"sufficient\": true或false, \"gap\": \"缺失的信息描述\"或null}\n"
+                         + "如果结果能回答问题，sufficient 为 true，gap 为 null。\n"
+                         + "如果结果不能回答问题，sufficient 为 false，gap 描述缺少什么关键信息。")
+            .defaultOptions(ChatOptions.builder().temperature(0.1).build())
+            .build();
+    }
+
+    /**
+     * 查询改写器：改写查询以提高检索质量
+     */
+    @Bean
+    public ChatClient rewriterChatClient(ChatModel chatModel) {
+        return ChatClient.builder(chatModel)
+            .defaultSystem("你是一个搜索查询改写专家。根据原始查询和缺失信息，生成1-3个改写后的搜索查询。\n"
+                         + "输出 JSON 数组格式，例如: [\"改写查询1\", \"改写查询2\"]。\n"
+                         + "改写后的查询应该更具体、更精确，能检索到缺失的信息。")
+            .defaultOptions(ChatOptions.builder().temperature(0.3).build())
+            .build();
+    }
 }
