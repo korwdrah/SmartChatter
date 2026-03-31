@@ -93,9 +93,9 @@ public class HybridSearchService {
                                 .k(recallK)
                                 .numCandidates(recallK)
                         );
-                        // 必须命中关键词 + 权限过滤
+                        // BM25 文本匹配（should，跨语言时得分为0不影响KNN结果）+ 权限过滤（filter，硬性约束）
                         s.query(q -> q.bool(b -> b
-                                .must(mst -> mst.match(m -> m.field("textContent").query(query)))
+                                .should(sh -> sh.match(m -> m.field("textContent").query(query)))
                                 .filter(f -> f.bool(bf -> bf
                                         // 条件1: 用户可访问自己的文档
                                         .should(s1 -> s1.term(t -> t.field("userId").value(userDbId)))
@@ -295,8 +295,10 @@ public class HybridSearchService {
                                 .numCandidates(recallK)
                         );
 
-                        // 过滤仅保留包含关键词的文本
-                        s.query(q -> q.match(m -> m.field("textContent").query(query)));
+                        // BM25 文本匹配（should，跨语言时得分为0不影响KNN结果）
+                        s.query(q -> q.bool(b -> b
+                                .should(sh -> sh.match(m -> m.field("textContent").query(query)))
+                        ));
 
                         // rescore BM25
                         s.rescore(r -> r
