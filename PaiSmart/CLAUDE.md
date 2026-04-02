@@ -35,15 +35,42 @@ cd docs && docker-compose up -d   # Start MySQL, Redis, ES, Kafka, MinIO
 
 ## Architecture
 
-### RAG Pipeline (the core of the system)
+### Document Pipeline (ingestion → indexed)
 
-Five stages, each in a separate service:
+Four stages, each in a separate service:
 
 1. **Ingestion**: `UploadController` → `UploadService` (chunked upload with MD5 dedup, stores to MinIO) → publishes to Kafka topic `file-processing-topic1`
 2. **Parsing**: `FileProcessingConsumer` (Kafka) → `ParseService` → Apache Tika extraction → semantic chunking (paragraph-aware, HanLP Chinese segmentation for long sentences, 512-char chunks) → stores `DocumentVector` entities in MySQL
 3. **Vectorization**: `VectorizationService` → DashScope embedding-3 API (batch 10 chunks/request, 2048-dim vectors) → indexes into Elasticsearch
 4. **Retrieval**: `HybridSearchService` → query embedding → KNN search (top 150 candidates) → BM25 rescoring → multi-tenant permission filter → ranked results
-5. **Generation**: `ChatHandler` → builds prompt (system rules + `<<REF>>...<<END>>` reference block + last 20 messages) → `GLMClient` (streaming) → WebSocket response
+
+### Agentic RAG Chat Pipeline (the core of the system)
+
+`ChatHandler` now routes every user message through a three-way classification before generation:
+
+```
+User Message → QueryRouter.classify()
+  ├── [direct]  → lightweight system prompt → GLM streaming (chitchat, no retrieval)
+  ├── [rag]     → single HybridSearchService.searchWithPermission() → GLM streaming
+  └── [agent]   → AgentOrchestrator.executeAsync()
+                    → PlannerAgent.plan() (1-4 sub-queries)
+                    → parallel KnowledgeSearchTool per sub-query
+                    → dedup + merge results
+                    → EvaluateResultsTool (up to max-retry times)
+                    → if insufficient: QueryRewriteTool → supplemental search
+                    → failure/timeout → fallback to rag path
+                  → GLM streaming
+```
+
+The `agent/` package contains:
+- `QueryRouter`: LLM-driven three-way classification (direct/rag/agent)
+- `AgentOrchestrator`: Semaphore-limited async execution (20 concurrent, 15s timeout)
+- `PlannerAgent`: Decomposes complex queries into sub-queries for parallel retrieval
+- `AgentContext`: ThreadLocal holder for userId, used by tools for permission filtering
+- `AgentResult`: Wraps merged search results, provides `buildContext()` for prompt construction
+- `tool/KnowledgeSearchTool`: Wraps `HybridSearchService`, reads userId from `AgentContext`
+- `tool/EvaluateResultsTool`: LLM evaluator checking result sufficiency
+- `tool/QueryRewriteTool`: LLM rewriter generating improved queries from identified gaps
 
 ### Async Processing (Kafka)
 
@@ -71,11 +98,31 @@ Documents have three visibility levels: owner's own, public, and organization-sc
 - Responses stream as `{ chunk: "text" }` frames, completed with `{ type: "completion" }`
 - Stop generation via internal command tokens
 
+### Thread Pool Architecture
+
+`ThreadPoolConfig` defines four isolated pools (all `CallerRunsPolicy` backpressure):
+
+| Bean | Prefix | Core/Max/Queue | Purpose |
+|------|--------|---------------|---------|
+| `chatExecutor` | `chat-` | 8/32/200 | WebSocket chat main: history + search + LLM streaming |
+| `agentPool` | `agent-` | 4/16/50 | Agent orchestration: routing, planning, aggregation |
+| `llmCallPool` | `llm-` | 8/32/200 | All LLM API calls (GLM/DeepSeek HTTP requests) |
+| `toolPool` | `tool-` | 8/16/100 | Agent tool execution (knowledge search, evaluation, rewrite) |
+
+### Spring AI Integration
+
+Spring AI 1.0.0 (`spring-ai-starter-model-openai`) provides four `ChatClient` beans in `SpringAiConfig`, all using GLM-4.7-flashx via OpenAI-compatible API:
+
+- `routerChatClient` — query classification (temp 0.1)
+- `plannerChatClient` — sub-query decomposition (temp 0.1)
+- `evaluatorChatClient` — result quality evaluation (temp 0.1)
+- `rewriterChatClient` — query rewriting (temp 0.3)
+
 ### Key Services
 
 | Service | Role |
 |---------|------|
-| `ChatHandler` | Orchestrates the full RAG pipeline for chat: retrieval → prompt building → streaming LLM response |
+| `ChatHandler` | Routes through QueryRouter, orchestrates RAG/agent pipeline, builds prompt, streams LLM response |
 | `ParseService` | Document parsing with streaming Tika extraction and semantic chunking (monitors JVM memory at 80% threshold) |
 | `HybridSearchService` | Combines KNN vector search + BM25 keyword rescoring with permission filtering |
 | `VectorizationService` | Batch embedding generation and ES indexing |
@@ -85,6 +132,7 @@ Documents have three visibility levels: owner's own, public, and organization-sc
 ### AI Clients (`client/`)
 
 - `GLMClient`: Primary LLM (DeepSeek/GLM), streaming via WebClient/WebFlux `Flux<String>`
+- `DeepSeekClient`: Alternate LLM client (structurally similar, not used by ChatHandler)
 - `EmbeddingClient`: DashScope embedding-3 API for text vectorization
 - Generation params configured in `application.yml` under `ai.generation` (temperature: 0.3, max-tokens: 2000)
 
@@ -95,7 +143,7 @@ Documents have three visibility levels: owner's own, public, and organization-sc
 
 ### Frontend
 
-Vue 3 + TypeScript + Naive UI + Pinia + UnoCSS. WebSocket chat is in the `/chat` view. API calls go through `service/` layer with axios. State managed in Pinia stores under `store/`.
+Vue 3 + TypeScript + Naive UI + Pinia + UnoCSS. pnpm workspace monorepo with shared packages under `frontend/packages/`. WebSocket chat is in the `/chat` view. API calls go through `service/` layer with axios. State managed in Pinia stores under `store/`. Environment files: `.env` (base), `.env.test` (localhost:8081), `.env.prod` (nginx proxy).
 
 ## Configuration Profiles
 
@@ -103,7 +151,18 @@ Vue 3 + TypeScript + Naive UI + Pinia + UnoCSS. WebSocket chat is in the `/chat`
 - `application-dev.yml`: Local development overrides
 - `application-docker.yml`: Docker deployment overrides
 
-AI prompt engineering is configured under `ai.prompt` in YAML (system rules, reference delimiters `<<REF>>`/`<<END>>`, no-result fallback text).
+AI prompt engineering is configured under `ai.prompt` in YAML:
+- `ai.prompt.rules`: Main system prompt for RAG/agent routes (includes `<<REF>>`/`<<END>>` reference delimiters, no-result fallback text)
+- `ai.prompt.direct-rules`: Lightweight system prompt for the direct (chitchat) route
+- Agent configuration under `agent:` (timeout, semaphore limits, planner max-sub-queries, evaluator max-retry)
+
+### Elasticsearch Index
+
+Index `knowledge_base` is auto-created at startup via `EsIndexInitializer` using mapping from `src/main/resources/es-mappings/knowledge_base.json`. Uses `ik_max_word`/`ik_smart` analyzers (Chinese segmentation), 2048-dim `dense_vector` with cosine similarity, and keyword fields for permission filtering (`userId`, `orgTag`, `isPublic`).
+
+### Pre-commit Hooks
+
+Commits from the frontend directory require passing `pnpm typecheck` and `pnpm lint` (configured via `simple-git-hooks` in root `package.json`).
 
 ## External Dependencies
 
@@ -111,4 +170,4 @@ MySQL 8.0 | Redis 7.0.11 | Elasticsearch 8.10.0 | Kafka 3.2.1 | MinIO 8.5.12 | D
 
 ## Tech Stack
 
-Spring Boot 3.4.2 (Java 17) | Spring Data JPA | Spring Security + JWT | Spring WebFlux | Apache Tika 2.9.1 | HanLP | Lombok | Vue 3.5 | Vite 6.3 | Naive UI | Pinia 3.0 | UnoCSS | pnpm
+Spring Boot 3.4.2 (Java 17) | Spring AI 1.0.0 | Spring Data JPA | Spring Security + JWT | Spring WebFlux | Apache Tika 2.9.1 | HanLP | Lombok | Vue 3.5 | Vite 6.3 | Naive UI | Pinia 3.0 | UnoCSS | pnpm
