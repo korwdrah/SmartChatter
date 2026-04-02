@@ -170,16 +170,34 @@ public class ThreadPoolConfig {
             r -> { Thread t = new Thread(r, name + "-monitor"); t.setDaemon(true); return t; });
         monitor.scheduleAtFixedRate(() -> {
             ThreadPoolExecutor pool = executor.getThreadPoolExecutor();
+            int active = pool.getActiveCount();
+            int queueSize = pool.getQueue().size();
+
             logger.info("[ThreadPoolMonitor] {} - active:{}, pool:{}/{}, queue:{}/{}, completed:{}, waiting:{}",
                 name,
-                pool.getActiveCount(),
+                active,
                 pool.getPoolSize(),
                 pool.getMaximumPoolSize(),
-                pool.getQueue().size(),
-                pool.getQueue().remainingCapacity() + pool.getQueue().size(),
+                queueSize,
+                pool.getQueue().remainingCapacity() + queueSize,
                 pool.getCompletedTaskCount(),
-                pool.getTaskCount() - pool.getCompletedTaskCount() - pool.getActiveCount()
+                pool.getTaskCount() - pool.getCompletedTaskCount() - active
             );
+
+            // 阈值告警: 活跃线程超过最大线程数的 80%
+            double usage = (double) active / pool.getMaximumPoolSize();
+            if (usage > 0.8) {
+                logger.warn("[ThreadPoolMonitor] {} 线程池高负载: usage={}%, active={}/{}, queue={}",
+                    name, String.format("%.0f", usage * 100), active, pool.getMaximumPoolSize(), queueSize);
+            }
+
+            // 阈值告警: 队列使用超过 80%
+            int queueCapacity = pool.getQueue().remainingCapacity() + queueSize;
+            double queueUsage = queueCapacity > 0 ? (double) queueSize / queueCapacity : 0;
+            if (queueUsage > 0.8) {
+                logger.warn("[ThreadPoolMonitor] {} 队列积压: queueUsage={}%, queue={}/{}",
+                    name, String.format("%.0f", queueUsage * 100), queueSize, queueCapacity);
+            }
         }, 30, 30, TimeUnit.SECONDS);
     }
 }

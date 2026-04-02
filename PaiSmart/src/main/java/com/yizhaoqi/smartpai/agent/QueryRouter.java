@@ -45,8 +45,15 @@ public class QueryRouter {
 
             // 清理输出，只取第一个词
             result = result.trim().toLowerCase();
-            if (result.contains("agent")) return "agent";
-            if (result.contains("rag")) return "rag";
+            if (result.contains("agent")) {
+                logger.info("查询路由完成: result=agent, query={}", userMessage);
+                return "agent";
+            }
+            if (result.contains("rag")) {
+                logger.info("查询路由完成: result=rag, query={}", userMessage);
+                return "rag";
+            }
+            logger.info("查询路由完成: result=direct, query={}", userMessage);
             return "direct";  // 默认走 direct
         } catch (Exception e) {
             logger.error("查询路由分类失败，默认走 rag: {}", e.getMessage(), e);

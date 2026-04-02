@@ -3,6 +3,7 @@ package com.yizhaoqi.smartpai.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yizhaoqi.smartpai.agent.AgentMDC;
 import com.yizhaoqi.smartpai.agent.AgentOrchestrator;
 import com.yizhaoqi.smartpai.agent.AgentResult;
 import com.yizhaoqi.smartpai.agent.QueryRouter;
@@ -74,8 +75,9 @@ public class ChatHandler {
     }
 
     public void processMessage(String userId, String userMessage, WebSocketSession session) {
-        logger.info("开始处理消息，用户ID: {}, 会话ID: {}", userId, session.getId());
+        AgentMDC.setup(userId);
         try {
+            logger.info("开始处理消息，用户ID: {}, 会话ID: {}", userId, session.getId());
             // 1. 获取或创建会话 ID
             String conversationId = getOrCreateConversationId(userId);
 
@@ -95,6 +97,10 @@ public class ChatHandler {
 
             logger.info("查询路由结果: route={}, userId={}, query={}", route, userId, userMessage);
 
+            AgentMDC.setPhase("route");
+            AgentMDC.setPath(route);
+            logger.info("查询路由: result={}, query={}", route, userMessage);
+
             // 4. 根据路由构建 context
             String context;
             boolean isDirect = false;
@@ -113,7 +119,7 @@ public class ChatHandler {
                     CompletableFuture<AgentResult> agentFuture =
                         agentOrchestrator.executeAsync(userId, userMessage, history);
                     try {
-                        AgentResult agentResult = agentFuture.get(15, TimeUnit.SECONDS);
+                        AgentResult agentResult = agentFuture.get(30, TimeUnit.SECONDS);
                         if (agentResult != null) {
                             context = agentResult.buildContext();
                         } else {
@@ -179,6 +185,8 @@ public class ChatHandler {
             if (future != null && !future.isDone()) {
                 future.completeExceptionally(e);
             }
+        } finally {
+            AgentMDC.clear();
         }
     }
 

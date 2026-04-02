@@ -91,15 +91,18 @@ public class AgentOrchestrator {
 
         // 设置 AgentContext
         AgentContext.setUserId(userId);
+        AgentMDC.setPhase("plan");
 
         try {
             // Step 1: 规划子查询
+            long planStart = System.currentTimeMillis();
             List<String> subQueries = plannerAgent.plan(message, history);
-            logger.info("Agent规划完成: subQueries={}, 耗时={}ms",
-                subQueries, System.currentTimeMillis() - startTime);
+            long planLatency = System.currentTimeMillis() - planStart;
+            logger.info("查询规划完成: subQueries={}, count={}, latency={}ms",
+                subQueries, subQueries.size(), planLatency);
 
             // Step 2: 根据子查询数量动态分配每路检索配额，并行执行
-            // 例如 totalBudget=10，2 个子查询则每路各取 top 5，4 个子查询则每路各取 top 2
+            AgentMDC.setPhase("execute");
             int totalBudget = 10;
             int perQueryK = Math.max(1, totalBudget / subQueries.size());
             List<CompletableFuture<List<SearchResult>>> searchFutures = subQueries.stream()
@@ -107,7 +110,9 @@ public class AgentOrchestrator {
                     () -> knowledgeSearchTool.search(query, perQueryK), toolPool))
                 .collect(Collectors.toList());
 
+            long execStart = System.currentTimeMillis();
             CompletableFuture.allOf(searchFutures.toArray(new CompletableFuture[0])).join();
+            long execLatency = System.currentTimeMillis() - execStart;
 
             // Step 3: 合并所有子查询结果，去重时保留最高分，按分数降序排列，截断到总量 topK
             Map<String, SearchResult> deduped = new HashMap<>();
@@ -128,7 +133,11 @@ public class AgentOrchestrator {
                 allResults = allResults.subList(0, totalBudget);
             }
 
+            logger.info("并行检索完成: subQueries={}, totalResults={}, latency={}ms",
+                subQueries.size(), allResults.size(), execLatency);
+
             // Step 4: 评估结果质量（最多补充检索 maxRetryCount 次）
+            AgentMDC.setPhase("evaluate");
             int retryCount = 0;
             while (retryCount < maxRetryCount) {
                 // 构建结果摘要供评估器使用（前10条，每条截断到100字符）
@@ -144,15 +153,19 @@ public class AgentOrchestrator {
                     evaluateResultsTool.evaluate(message, resultsSummary.toString());
 
                 if (eval.sufficient()) {
-                    logger.info("结果评估通过, 无需补充检索");
+                    logger.info("结果评估: sufficient=true, gap=null, retry={}", retryCount);
                     break;
                 }
 
                 retryCount++;
-                logger.info("结果不足, 启动第{}次补充检索, gap={}", retryCount, eval.gap());
+                logger.info("结果评估: sufficient=false, gap={}, retry={}", eval.gap(), retryCount);
 
                 // 改写查询
                 List<String> rewrittenQueries = queryRewriteTool.rewrite(message, eval.gap());
+
+                // 补充检索时切回 execute 阶段
+                AgentMDC.setPhase("execute");
+                long supplementStart = System.currentTimeMillis();
 
                 // 并行执行补充检索
                 List<CompletableFuture<List<SearchResult>>> supplementFutures = rewrittenQueries.stream()
@@ -161,6 +174,10 @@ public class AgentOrchestrator {
                     .collect(Collectors.toList());
 
                 CompletableFuture.allOf(supplementFutures.toArray(new CompletableFuture[0])).join();
+
+                long supplementLatency = System.currentTimeMillis() - supplementStart;
+                logger.info("补充检索完成: rewrittenQueries={}, latency={}ms",
+                    rewrittenQueries.size(), supplementLatency);
 
                 // 合并补充结果（去重）
                 Set<String> existingKeys = allResults.stream()
@@ -176,10 +193,16 @@ public class AgentOrchestrator {
                         }
                     }
                 }
+
+                // 切回 evaluate 阶段
+                AgentMDC.setPhase("evaluate");
             }
 
+            // 总结
+            AgentMDC.setPhase("synthesize");
             long totalLatency = System.currentTimeMillis() - startTime;
-            logger.info("Agent执行完成: totalLatency={}ms, subQueries={}, totalResults={}, evalRetries={}",
+            logger.info("Agent执行完成: totalLatency={}ms, path=agent, subQueries={}, " +
+                         "totalResults={}, supplementalRetry={}",
                 totalLatency, subQueries.size(), allResults.size(), retryCount);
 
             return new AgentResult(allResults);
