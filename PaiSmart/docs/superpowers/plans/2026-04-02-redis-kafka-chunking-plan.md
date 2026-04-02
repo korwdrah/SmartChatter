@@ -87,6 +87,10 @@ git commit -m "feat(redis): 新增 chatRedisTemplate bean，使用 StringRedisSe
 - Modify: `src/main/java/com/yizhaoqi/smartpai/service/ChatHandler.java`
 - Modify: `src/main/resources/application.yml`
 
+> **关键说明**：`ChatHandler` 中有两类 Redis key：
+> - `user:{userId}:current_conversation`：存储单个 conversationId 字符串，仍使用 `opsForValue()`
+> - `conversation:{conversationId}`：存储消息列表，从 `opsForValue()` 改为 `opsForList()`
+
 - [ ] **Step 1: 在 application.yml 中添加 chat.history.max-messages 配置**
 
 在 `application.yml` 末尾（file.parsing 之后）新增：
@@ -108,17 +112,12 @@ private final RedisTemplate<String, String> redisTemplate;
 private final RedisTemplate<String, String> chatRedisTemplate;
 ```
 
-在构造函数中，参数 `RedisTemplate<String, String> redisTemplate` 改为 `@Qualifier("chatRedisTemplate") RedisTemplate<String, String> chatRedisTemplate`。
+在构造函数（line 60-75）中，参数 `RedisTemplate<String, String> redisTemplate` 改为 `@Qualifier("chatRedisTemplate") RedisTemplate<String, String> chatRedisTemplate`。
 
-需要添加 import：
+新增 import（检查已有 import 避免重复）：
 ```java
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import java.util.Collections;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
 ```
-
-注意：`@Qualifier` import 已存在（line 14）。
 
 新增配置字段（在 line 58 附近）：
 ```java
@@ -128,7 +127,7 @@ private int maxMessages;
 
 - [ ] **Step 3: 重写 getOrCreateConversationId**
 
-将 `getOrCreateConversationId()` 方法（line 193-206）中所有 `redisTemplate` 替换为 `chatRedisTemplate`。核心逻辑不变（仍使用 `opsForValue()`），只需更换引用名。
+将 `getOrCreateConversationId()` 方法（line 193-206）中所有 `redisTemplate` 替换为 `chatRedisTemplate`。核心逻辑不变（仍使用 `opsForValue()`，因为这是 user→conversationId 的简单映射），只需更换引用名。
 
 - [ ] **Step 4: 重写 getConversationHistory**
 
@@ -140,7 +139,6 @@ private List<Map<String, String>> getConversationHistory(String conversationId, 
         String key = "conversation:" + conversationId;
         List<String> elements = chatRedisTemplate.opsForList().range(key, 0, -1);
         if (elements == null || elements.isEmpty()) {
-            // 检查是否存在旧格式数据
             if (Boolean.TRUE.equals(chatRedisTemplate.hasKey(key))) {
                 logger.warn("存在旧格式(String)对话数据 key={}, 将在 TTL 到期后自动清理", key);
             }
@@ -184,14 +182,16 @@ private void updateConversationHistory(String conversationId, String userMessage
         String userJson = objectMapper.writeValueAsString(userMsg);
         String assistantJson = objectMapper.writeValueAsString(assistantMsg);
 
-        chatRedisTemplate.executePipelined((org.springframework.data.redis.connection.RedisCallback<Object>) connection -> {
-            byte[] keyBytes = key.getBytes();
-            byte[] userBytes = userJson.getBytes();
-            byte[] assistantBytes = assistantJson.getBytes();
+        // 使用 chatRedisTemplate 的 serializer 保证编码一致
+        byte[] keyBytes = chatRedisTemplate.getStringSerializer().serialize(key);
+        byte[] userBytes = chatRedisTemplate.getStringSerializer().serialize(userJson);
+        byte[] assistantBytes = chatRedisTemplate.getStringSerializer().serialize(assistantJson);
+        long maxMsg = maxMessages;
 
+        chatRedisTemplate.executePipelined((org.springframework.data.redis.connection.RedisCallback<Object>) connection -> {
             connection.listCommands().rPush(keyBytes, userBytes);
             connection.listCommands().rPush(keyBytes, assistantBytes);
-            connection.listCommands().lTrim(keyBytes, -(maxMessages), -1);
+            connection.listCommands().lTrim(keyBytes, -maxMsg, -1);
             connection.keyCommands().expire(keyBytes, Duration.ofDays(7).getSeconds());
             return null;
         });
@@ -200,6 +200,8 @@ private void updateConversationHistory(String conversationId, String userMessage
     }
 }
 ```
+
+> 注意：使用 `chatRedisTemplate.getStringSerializer().serialize()` 而非 `key.getBytes()`，确保与 StringRedisSerializer 编码一致。
 
 - [ ] **Step 6: 更新 processMessage 中的调用**
 
@@ -226,6 +228,8 @@ git commit -m "feat(chat): Redis 聊天记录改为 List+LTRIM 滑动窗口"
 **Files:**
 - Modify: `src/main/java/com/yizhaoqi/smartpai/controller/ConversationController.java`
 
+> **关键说明**：`ConversationController` 同时读取 `user:*:current_conversation`（仍用 `opsForValue()`）和 `conversation:*`（改用 `opsForList()`）。
+
 - [ ] **Step 1: 修改 RedisTemplate 注入**
 
 将 `ConversationController.java:29-30` 的：
@@ -240,14 +244,14 @@ private RedisTemplate<String, String> redisTemplate;
 private RedisTemplate<String, String> redisTemplate;
 ```
 
-需要添加 import：
+添加 import（`TypeReference` 已存在于 line 5，不需要重复添加）：
 ```java
 import org.springframework.beans.factory.annotation.Qualifier;
 ```
 
 - [ ] **Step 2: 重写 getConversationsFromRedis 方法**
 
-将 `getConversationsFromRedis()` 方法（line 113-206）中读取对话历史的部分从：
+在 `getConversationsFromRedis()` 方法（line 113-206）中，找到读取 `conversation:{id}` key 的部分（约 line 150-160），将：
 ```java
 String json = redisTemplate.opsForValue().get(conversationKey);
 List<Map<String, String>> history = objectMapper.readValue(json, ...);
@@ -263,7 +267,7 @@ if (elements != null) {
 }
 ```
 
-其余逻辑（日期过滤、消息格式化）不变。
+其余逻辑（读取 `user:*:current_conversation` 用 `opsForValue()`、日期过滤、消息格式化）不变。
 
 - [ ] **Step 3: 验证编译**
 
@@ -298,10 +302,13 @@ private RedisTemplate<String, String> redisTemplate;
 private RedisTemplate<String, String> redisTemplate;
 ```
 
-需要添加 import：
+添加 import：
 ```java
 import org.springframework.beans.factory.annotation.Qualifier;
+import com.fasterxml.jackson.core.type.TypeReference;
 ```
+
+> 注：检查 `TypeReference` 是否已存在。如果未导入，需添加。
 
 - [ ] **Step 2: 修改 getAllConversations 中的读取逻辑**
 
@@ -319,8 +326,6 @@ if (elements != null && !elements.isEmpty()) {
     processRedisConversation(elements, allConversations, displayUsername, start_date, end_date);
 }
 ```
-
-需要添加 import `java.util.List;`（可能已存在）。
 
 - [ ] **Step 3: 重写 processRedisConversation 方法签名和实现**
 
@@ -342,8 +347,6 @@ for (String element : elements) {
 }
 ```
 
-需要添加 import `com.fasterxml.jackson.core.type.TypeReference;`。
-
 其余逻辑（日期过滤、消息格式化）不变。
 
 - [ ] **Step 4: 验证编译**
@@ -360,109 +363,9 @@ git commit -m "feat(chat): AdminController 适配 Redis List 读取"
 
 ---
 
-### Task 5: ChatHandler Redis 滑动窗口测试
-
-**Files:**
-- Create: `src/test/java/com/yizhaoqi/smartpai/service/ChatHandlerRedisTest.java`
-
-- [ ] **Step 1: 编写测试**
-
-创建测试类，验证核心 Redis 滑动窗口行为。使用 embedded Redis 或 mock RedisTemplate。
-
-```java
-package com.yizhaoqi.smartpai.service;
-
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.redis.connection.RedisConnection;
-import org.springframework.data.redis.connection.RedisListCommands;
-import org.springframework.data.redis.core.RedisCallback;
-import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
-import org.springframework.data.redis.core.ListOperations;
-
-import java.time.Duration;
-import java.util.*;
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
-
-@ExtendWith(MockitoExtension.class)
-class ChatHandlerRedisTest {
-
-    @Mock
-    private RedisTemplate<String, String> chatRedisTemplate;
-
-    @Mock
-    private ListOperations<String, String> listOperations;
-
-    @Mock
-    private ValueOperations<String, String> valueOperations;
-
-    private ObjectMapper objectMapper = new ObjectMapper();
-
-    // 测试 getConversationHistory 返回空列表时旧格式数据检测
-    @Test
-    void getConversationHistory_emptyList_noOldFormatData() {
-        when(chatRedisTemplate.opsForList()).thenReturn(listOperations);
-        when(listOperations.range(anyString(), eq(0L), eq(-1L))).thenReturn(null);
-        when(chatRedisTemplate.hasKey(anyString())).thenReturn(false);
-
-        // 验证：返回空列表，无 warn 日志
-        // （实际测试需要调用 ChatHandler 的 private 方法，通过反射或改为 package-private）
-    }
-
-    @Test
-    void getConversationHistory_emptyList_oldFormatData_logs() {
-        when(chatRedisTemplate.opsForList()).thenReturn(listOperations);
-        when(listOperations.range(anyString(), eq(0L), eq(-1L))).thenReturn(Collections.emptyList());
-        when(chatRedisTemplate.hasKey(anyString())).thenReturn(true);
-
-        // 验证：返回空列表，记录 warn 日志
-    }
-
-    @Test
-    void getConversationHistory_reversed_returnsLatestFirst() throws Exception {
-        List<String> elements = new ArrayList<>();
-        Map<String, String> msg1 = Map.of("role", "user", "content", "hello", "timestamp", "t1");
-        Map<String, String> msg2 = Map.of("role", "assistant", "content", "hi", "timestamp", "t2");
-        elements.add(objectMapper.writeValueAsString(msg1));
-        elements.add(objectMapper.writeValueAsString(msg2));
-
-        when(chatRedisTemplate.opsForList()).thenReturn(listOperations);
-        when(listOperations.range(anyString(), eq(0L), eq(-1L))).thenReturn(elements);
-
-        // 验证 reversed=true 时返回 [msg2, msg1]
-    }
-}
-```
-
-注意：由于 `getConversationHistory` 是 private 方法，测试策略有两种：
-1. 通过反射调用 private 方法
-2. 将方法可见性改为 package-private（推荐，因为测试类在同一包下）
-
-- [ ] **Step 2: 运行测试验证**
-
-Run: `cd /Users/felx/Project/JavaProject/PaicodingProject/PaiSmart && mvn test -Dtest=ChatHandlerRedisTest -q`
-Expected: 所有测试通过
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add src/test/java/com/yizhaoqi/smartpai/service/ChatHandlerRedisTest.java
-git commit -m "test(chat): 新增 Redis 滑动窗口单元测试"
-```
-
----
-
 ## Part 2: Kafka 消费者修复
 
-### Task 6: 修复 KafkaConfig — auto-commit + AckMode
+### Task 5: 修复 KafkaConfig — auto-commit + AckMode
 
 **Files:**
 - Modify: `src/main/java/com/yizhaoqi/smartpai/config/KafkaConfig.java`
@@ -483,24 +386,38 @@ config.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
 factory.getContainerProperties().setAckMode(org.springframework.kafka.listener.ContainerProperties.AckMode.MANUAL_IMMEDIATE);
 ```
 
-- [ ] **Step 3: 在 dev 和 docker profile 中补充 enable-auto-commit**
+- [ ] **Step 3: 在 dev profile 中补充 enable-auto-commit**
 
-在 `application-dev.yml` 的 `consumer` 部分（line 45 之后，`topic` 之前）添加：
+在 `application-dev.yml` 的 `consumer` 部分，在 `properties` 块之后、`topic` 之前添加。注意缩进必须与 `group-id`、`auto-offset-reset` 同级（6 个空格）：
+
 ```yaml
       enable-auto-commit: false
 ```
 
-在 `application-docker.yml` 的 `consumer` 部分（line 44 之后，`topic` 之前）添加：
+完整 consumer 部分应为：
 ```yaml
+    consumer:
+      group-id: file-processing-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       enable-auto-commit: false
+      properties:
+        spring.json.trusted.packages: "*"
+        client.dns.lookup: use_all_dns_ips
+    topic:
 ```
 
-- [ ] **Step 4: 验证编译**
+- [ ] **Step 4: 在 docker profile 中补充 enable-auto-commit**
+
+同上，在 `application-docker.yml` 的 `consumer` 部分添加 `enable-auto-commit: false`，缩进与 `group-id` 同级。
+
+- [ ] **Step 5: 验证编译**
 
 Run: `cd /Users/felx/Project/JavaProject/PaicodingProject/PaiSmart && mvn compile -q`
 Expected: BUILD SUCCESS
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/main/java/com/yizhaoqi/smartpai/config/KafkaConfig.java src/main/resources/application-dev.yml src/main/resources/application-docker.yml
@@ -509,7 +426,7 @@ git commit -m "fix(kafka): 恢复 auto-commit 禁用 + 设置 AckMode.MANUAL_IMM
 
 ---
 
-### Task 7: 修复 Producer 消息加 key
+### Task 6: 修复 Producer 消息加 key
 
 **Files:**
 - Modify: `src/main/java/com/yizhaoqi/smartpai/controller/UploadController.java`
@@ -539,7 +456,7 @@ git commit -m "fix(kafka): Producer 发送消息添加 fileMd5 作为 key"
 
 ---
 
-### Task 8: 修复 downloadFileFromStorage 异常处理
+### Task 7: 修复 downloadFileFromStorage 异常处理 + 统一注入
 
 **Files:**
 - Modify: `src/main/java/com/yizhaoqi/smartpai/consumer/FileProcessingConsumer.java`
@@ -548,23 +465,12 @@ git commit -m "fix(kafka): Producer 发送消息添加 fileMd5 作为 key"
 
 在 `FileProcessingConsumer.java` 的 `downloadFileFromStorage()` 方法（line 96-138）中：
 
-将 line 96 的方法签名从：
-```java
-private InputStream downloadFileFromStorage(String filePath) {
-```
-改为：
+1. 移除方法签名上的所有 checked exception 声明，简化为 `throws IOException`：
 ```java
 private InputStream downloadFileFromStorage(String filePath) throws IOException {
 ```
 
-将 line 134-136 的异常吞没：
-```java
-} catch (Exception e) {
-    log.error("下载文件失败: {}", filePath, e);
-    return null;
-}
-```
-改为直接抛出：
+2. 将 line 134-136 的异常吞没（`catch (Exception e) { return null; }`）替换为包装后重新抛出：
 ```java
 } catch (IOException e) {
     throw new IOException("下载文件失败: " + filePath, e);
@@ -573,14 +479,16 @@ private InputStream downloadFileFromStorage(String filePath) throws IOException 
 }
 ```
 
+3. 移除方法内部的 try-catch 中 `return null` 分支和中间的其他 checked exception 声明。所有异常最终包装为 IOException 抛出。
+
 - [ ] **Step 2: 修改 processTask 中的调用**
 
-在 `processTask()` 方法中（line 52 附近），`downloadFileFromStorage` 的调用不再需要 null 检查（因为异常会直接抛出）。简化为：
+在 `processTask()` 方法中（line 52 附近），移除对 `downloadFileFromStorage` 返回值的 null 检查（因为异常直接抛出，不会返回 null）。简化为：
 ```java
 InputStream inputStream = downloadFileFromStorage(task.getFilePath());
 ```
 
-移除 line 54-56 的 null 检查逻辑。
+移除 line 54-56 的 null 检查逻辑（`if (inputStream == null)` 分支）。
 
 - [ ] **Step 3: 统一注入方式**
 
@@ -589,7 +497,7 @@ InputStream inputStream = downloadFileFromStorage(task.getFilePath());
 @Autowired
 private KafkaConfig kafkaConfig;
 ```
-改为构造函数注入（与 `parseService`、`vectorizationService` 一致）。
+改为构造函数注入，在构造函数中添加 `KafkaConfig kafkaConfig` 参数。
 
 - [ ] **Step 4: 验证编译**
 
@@ -600,12 +508,12 @@ Expected: BUILD SUCCESS
 
 ```bash
 git add src/main/java/com/yizhaoqi/smartpai/consumer/FileProcessingConsumer.java
-git commit -m "fix(kafka): downloadFileFromStorage 不再吞掉异常，直接抛出让 ErrorHandler 处理"
+git commit -m "fix(kafka): downloadFileFromStorage 不再吞掉异常，统一注入方式"
 ```
 
 ---
 
-### Task 9: 添加消费端幂等性
+### Task 8: 添加消费端幂等性
 
 **Files:**
 - Modify: `src/main/java/com/yizhaoqi/smartpai/repository/DocumentVectorRepository.java`
@@ -624,9 +532,13 @@ boolean existsByUserIdAndFileMd5(String userId, String fileMd5);
 void deleteByUserIdAndFileMd5(String userId, String fileMd5);
 ```
 
-- [ ] **Step 2: 在 FileProcessingConsumer.processTask 中添加幂等性检查**
+- [ ] **Step 2: 在 FileProcessingConsumer 中注入 DocumentVectorRepository**
 
-在 `processTask()` 方法中，在 `downloadFileFromStorage` 调用之前（line 52 之前），新增：
+在构造函数中添加 `DocumentVectorRepository documentVectorRepository` 参数，保存为 final 字段。
+
+- [ ] **Step 3: 在 processTask 中添加幂等性检查**
+
+在 `processTask()` 方法中，在 `downloadFileFromStorage` 调用之前，新增：
 
 ```java
 // 幂等性检查：如果该用户已处理过该文件，先清理再重处理
@@ -637,14 +549,12 @@ if (documentVectorRepository.existsByUserIdAndFileMd5(task.getUserId(), task.get
 }
 ```
 
-需要注入 `DocumentVectorRepository` 到 `FileProcessingConsumer`。
-
-- [ ] **Step 3: 验证编译**
+- [ ] **Step 4: 验证编译**
 
 Run: `cd /Users/felx/Project/JavaProject/PaicodingProject/PaiSmart && mvn compile -q`
 Expected: BUILD SUCCESS
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/main/java/com/yizhaoqi/smartpai/repository/DocumentVectorRepository.java src/main/java/com/yizhaoqi/smartpai/consumer/FileProcessingConsumer.java
@@ -653,7 +563,7 @@ git commit -m "feat(kafka): 消费端幂等性检查，基于 userId+fileMd5 去
 
 ---
 
-### Task 10: 新增 DLQ 消费者
+### Task 9: 新增 DLQ 消费者
 
 **Files:**
 - Create: `src/main/java/com/yizhaoqi/smartpai/consumer/DltConsumer.java`
@@ -687,6 +597,8 @@ public class DltConsumer {
 }
 ```
 
+> 注意：`DeadLetterPublishingRecoverer` 会保留原始 headers，`JsonDeserializer` 应能正常反序列化。如果遇到反序列化问题，可改用 `ConsumerRecord<byte[], byte[]>` 接收后手动反序列化。
+
 - [ ] **Step 2: 验证编译**
 
 Run: `cd /Users/felx/Project/JavaProject/PaicodingProject/PaiSmart && mvn compile -q`
@@ -701,84 +613,9 @@ git commit -m "feat(kafka): 新增 DLQ 消费者，记录失败消息日志"
 
 ---
 
-### Task 11: Kafka 消费者测试
-
-**Files:**
-- Create: `src/test/java/com/yizhaoqi/smartpai/consumer/FileProcessingConsumerTest.java`
-
-- [ ] **Step 1: 编写测试**
-
-```java
-package com.yizhaoqi.smartpai.consumer;
-
-import com.yizhaoqi.smartpai.model.FileProcessingTask;
-import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
-import com.yizhaoqi.smartpai.service.ParseService;
-import com.yizhaoqi.smartpai.service.VectorizationService;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.kafka.support.Acknowledgment;
-
-import static org.mockito.Mockito.*;
-
-@ExtendWith(MockitoExtension.class)
-class FileProcessingConsumerTest {
-
-    @Mock private ParseService parseService;
-    @Mock private VectorizationService vectorizationService;
-    @Mock private DocumentVectorRepository documentVectorRepository;
-    @Mock private Acknowledgment ack;
-
-    @Test
-    void processTask_idempotentCheck_skipsWhenAlreadyProcessed() throws Exception {
-        FileProcessingTask task = new FileProcessingTask(
-            "md5abc", "http://example.com/file.pdf", "file.pdf",
-            "user1", "org1", false
-        );
-
-        when(documentVectorRepository.existsByUserIdAndFileMd5("user1", "md5abc"))
-            .thenReturn(true);
-
-        // 构造 consumer 并调用 processTask
-        // 验证 deleteByUserIdAndFileMd5 被调用
-        // 验证后续 parse + vectorize 正常执行
-    }
-
-    @Test
-    void processTask_firstTime_noCleanup() throws Exception {
-        FileProcessingTask task = new FileProcessingTask(
-            "md5abc", "http://example.com/file.pdf", "file.pdf",
-            "user1", "org1", false
-        );
-
-        when(documentVectorRepository.existsByUserIdAndFileMd5("user1", "md5abc"))
-            .thenReturn(false);
-
-        // 验证 deleteByUserIdAndFileMd5 未被调用
-        // 验证 parse + vectorize 正常执行
-    }
-}
-```
-
-- [ ] **Step 2: 运行测试**
-
-Run: `cd /Users/felx/Project/JavaProject/PaicodingProject/PaiSmart && mvn test -Dtest=FileProcessingConsumerTest -q`
-Expected: 所有测试通过
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add src/test/java/com/yizhaoqi/smartpai/consumer/FileProcessingConsumerTest.java
-git commit -m "test(kafka): 新增消费者幂等性单元测试"
-```
-
----
-
 ## Part 3: 分块句子级重叠
 
-### Task 12: 添加 overlap 配置和辅助方法
+### Task 10: 添加 overlap 配置、辅助方法并改为 package-private
 
 **Files:**
 - Modify: `src/main/resources/application.yml`
@@ -809,7 +646,7 @@ file:
 private int overlapSentences;
 ```
 
-- [ ] **Step 3: 新增 extractLastNSentences 方法**
+- [ ] **Step 3: 新增 extractLastNSentences 方法（package-private）**
 
 在 `ParseService.java` 中（`splitByCharacters` 方法之后，line 346 附近），新增：
 
@@ -817,13 +654,12 @@ private int overlapSentences;
 /**
  * 从文本尾部提取最后 N 个完整句子。
  * 使用与 splitLongParagraph 相同的句子正则。
- * 如果文本中没有句子分隔符，返回空列表。
+ * 如果文本中没有句子分隔符，返回包含整个文本的单元素列表。
  */
-private List<String> extractLastNSentences(String text, int n) {
+List<String> extractLastNSentences(String text, int n) {
     if (text == null || text.isEmpty() || n <= 0) {
         return new ArrayList<>();
     }
-    // 使用现有句子正则分割
     String[] sentences = text.split("(?<=[。！？；])|(?<=[.!?;])\\s+");
     List<String> result = new ArrayList<>();
     int start = Math.max(0, sentences.length - n);
@@ -837,7 +673,9 @@ private List<String> extractLastNSentences(String text, int n) {
 }
 ```
 
-- [ ] **Step 4: 新增 applyOverlap 方法**
+> 注意：`private` 改为 package-private（无修饰符），以便同包测试类直接调用。
+
+- [ ] **Step 4: 新增 applyOverlap 方法（package-private）**
 
 在 `extractLastNSentences` 之后，新增：
 
@@ -846,7 +684,7 @@ private List<String> extractLastNSentences(String text, int n) {
  * 对切分后的 chunks 应用句子级重叠。
  * 每个非首 chunk 头部拼上前一个 chunk 尾部的 N 个句子。
  */
-private List<String> applyOverlap(List<String> chunks) {
+List<String> applyOverlap(List<String> chunks) {
     if (chunks == null || chunks.size() <= 1 || overlapSentences <= 0) {
         return chunks;
     }
@@ -879,10 +717,123 @@ git commit -m "feat(parse): 新增 overlap 配置和 extractLastNSentences + app
 
 ---
 
-### Task 13: 修改 StreamingContentHandler 集成 overlap
+### Task 11: 编写 overlap 测试（TDD — 先写测试验证方法行为）
+
+**Files:**
+- Create: `src/test/java/com/yizhaoqi/smartpai/service/ParseServiceOverlapTest.java`
+
+- [ ] **Step 1: 编写完整可运行的测试**
+
+```java
+package com.yizhaoqi.smartpai.service;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.InjectMocks;
+import org.mockito.MockitoAnnotations;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class ParseServiceOverlapTest {
+
+    private ParseService parseService;
+
+    @BeforeEach
+    void setUp() {
+        parseService = new ParseService();
+        ReflectionTestUtils.setField(parseService, "overlapSentences", 2);
+    }
+
+    @Test
+    void extractLastNSentences_chineseText_returnsLast2Sentences() {
+        List<String> result = parseService.extractLastNSentences(
+                "这是第一句。这是第二句。这是第三句。这是第四句。", 2);
+        assertEquals(2, result.size());
+        assertEquals("这是第三句。", result.get(0));
+        assertEquals("这是第四句。", result.get(1));
+    }
+
+    @Test
+    void extractLastNSentences_noDelimiters_returnsWholeText() {
+        List<String> result = parseService.extractLastNSentences("没有句号的文本", 2);
+        assertEquals(1, result.size());
+        assertEquals("没有句号的文本", result.get(0));
+    }
+
+    @Test
+    void extractLastNSentences_emptyText_returnsEmpty() {
+        List<String> result = parseService.extractLastNSentences("", 2);
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void extractLastNSentences_nullText_returnsEmpty() {
+        List<String> result = parseService.extractLastNSentences(null, 2);
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void extractLastNSentences_englishText_returnsLast2Sentences() {
+        List<String> result = parseService.extractLastNSentences(
+                "First sentence. Second sentence. Third sentence. Fourth sentence.", 2);
+        assertEquals(2, result.size());
+        assertEquals("Second sentence.", result.get(0));
+        assertEquals("Third sentence. Fourth sentence.", result.get(1));
+    }
+
+    @Test
+    void applyOverlap_singleChunk_returnsUnchanged() {
+        List<String> chunks = List.of("唯一的一个块");
+        List<String> result = parseService.applyOverlap(chunks);
+        assertEquals(1, result.size());
+        assertEquals("唯一的一个块", result.get(0));
+    }
+
+    @Test
+    void applyOverlap_multipleChunks_hasOverlap() {
+        List<String> chunks = List.of(
+                "第一段内容。第二段内容。第三段内容。",
+                "第四段内容。第五段内容。"
+        );
+        List<String> result = parseService.applyOverlap(chunks);
+        assertEquals(2, result.size());
+        assertEquals("第一段内容。第二段内容。第三段内容。", result.get(0));
+        // chunk2 头部应有 chunk1 的最后 2 句
+        assertTrue(result.get(1).startsWith("第二段内容。第三段内容。"));
+        assertTrue(result.get(1).endsWith("第四段内容。第五段内容。"));
+    }
+
+    @Test
+    void applyOverlap_nullOrEmpty_returnsInput() {
+        assertNull(parseService.applyOverlap(null));
+        assertEquals(List.of("single"), parseService.applyOverlap(List.of("single")));
+    }
+}
+```
+
+- [ ] **Step 2: 运行测试验证通过**
+
+Run: `cd /Users/felx/Project/JavaProject/PaicodingProject/PaiSmart && mvn test -Dtest=ParseServiceOverlapTest -q`
+Expected: 所有测试通过
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/test/java/com/yizhaoqi/smartpai/service/ParseServiceOverlapTest.java
+git commit -m "test(parse): 新增 extractLastNSentences + applyOverlap 单元测试"
+```
+
+---
+
+### Task 12: 修改 StreamingContentHandler 集成 overlap
 
 **Files:**
 - Modify: `src/main/java/com/yizhaoqi/smartpai/service/ParseService.java`
+
+> **关键说明**：`StreamingContentHandler` 是 `ParseService` 的私有内部类（line 122），通过 `ParseService.this` 访问外部类。`saveChildChunks` 实际签名接受 6 个参数：`(String fileMd5, List<String> chunks, String userId, String orgTag, boolean isPublic, int startingChunkId)`。
 
 - [ ] **Step 1: 在 StreamingContentHandler 内部类中添加 trailingOverlap 字段**
 
@@ -898,40 +849,50 @@ private String trailingOverlap = "";
 ```java
 private void processParentChunk() {
     String parentChunkText = buffer.toString();
-    buffer.setLength(0);
+    buffer.setLength(0);  // 必须清空 buffer
 
     // 1. 正常切分
-    List<String> chunks = ParseService.this.splitTextIntoChunksWithSemantics(parentChunkText, chunkSize);
+    List<String> childChunks = ParseService.this.splitTextIntoChunksWithSemantics(parentChunkText, chunkSize);
 
     // 2. 应用句子级 overlap
-    chunks = ParseService.this.applyOverlap(chunks);
+    childChunks = ParseService.this.applyOverlap(childChunks);
 
     // 3. 跨 parent chunk 边界：将上一个 parent chunk 的尾部 overlap 拼到第一个 chunk
-    if (!trailingOverlap.isEmpty() && !chunks.isEmpty()) {
-        chunks.set(0, trailingOverlap + chunks.get(0));
+    if (!trailingOverlap.isEmpty() && !childChunks.isEmpty()) {
+        childChunks.set(0, trailingOverlap + childChunks.get(0));
     }
 
     // 4. 更新 trailingOverlap 为当前最后一个 chunk 的尾部句子
-    if (!chunks.isEmpty()) {
+    if (!childChunks.isEmpty()) {
         List<String> lastSentences = ParseService.this.extractLastNSentences(
-                chunks.get(chunks.size() - 1), overlapSentences);
+                childChunks.get(childChunks.size() - 1), ParseService.this.overlapSentences);
         trailingOverlap = lastSentences.isEmpty() ? "" : String.join("", lastSentences);
     }
 
-    // 5. 保存 chunks
-    ParseService.this.saveChildChunks(chunks);
-    logger.info("处理父块完成，生成 {} 个子块", chunks.size());
+    // 5. 保存 chunks（保留原有的完整参数列表）
+    this.savedChunkCount = ParseService.this.saveChildChunks(
+            fileMd5, childChunks, userId, orgTag, isPublic, this.savedChunkCount);
+    logger.info("处理父块完成，生成 {} 个子块", childChunks.size());
 }
 ```
 
-注意：`overlapSentences` 通过 `ParseService.this.overlapSentences` 访问外部类字段。`chunkSize` 同理。
+> 注意：
+> - `buffer.setLength(0)` 必须保留，否则 buffer 无限增长导致 OOM
+> - `saveChildChunks` 保留完整的 6 参数调用，与原代码一致
+> - `overlapSentences` 通过 `ParseService.this.overlapSentences` 访问
+> - `chunkSize`、`fileMd5`、`userId`、`orgTag`、`isPublic` 都是内部类的现有字段
 
 - [ ] **Step 3: 验证编译**
 
 Run: `cd /Users/felx/Project/JavaProject/PaicodingProject/PaiSmart && mvn compile -q`
 Expected: BUILD SUCCESS
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: 运行 overlap 测试确认不破坏**
+
+Run: `cd /Users/felx/Project/JavaProject/PaicodingProject/PaiSmart && mvn test -Dtest=ParseServiceOverlapTest -q`
+Expected: 所有测试通过
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/main/java/com/yizhaoqi/smartpai/service/ParseService.java
@@ -940,94 +901,12 @@ git commit -m "feat(parse): StreamingContentHandler 集成句子级 overlap 后�
 
 ---
 
-### Task 14: 分块重叠测试
-
-**Files:**
-- Create: `src/test/java/com/yizhaoqi/smartpai/service/ParseServiceOverlapTest.java`
-
-- [ ] **Step 1: 编写测试**
-
-```java
-package com.yizhaoqi.smartpai.service;
-
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.test.util.ReflectionTestUtils;
-
-import java.util.List;
-
-import static org.junit.jupiter.api.Assertions.*;
-
-@ExtendWith(MockitoExtension.class)
-class ParseServiceOverlapTest {
-
-    // 使用 ReflectionTestUtils 设置 private 字段，或直接测试 public/protected 方法
-    // 建议将 extractLastNSentences 和 applyOverlap 改为 package-private 以便测试
-
-    @Test
-    void extractLastNSentences_chineseText_returnsLast2Sentences() {
-        ParseService service = new ParseService();
-        // 调用 extractLastNSentences("这是第一句。这是第二句。这是第三句。这是第四句。", 2)
-        // 期望返回 ["这是第三句。", "这是第四句。"]
-    }
-
-    @Test
-    void extractLastNSentences_noDelimiters_returnsEmpty() {
-        // 调用 extractLastNSentences("没有句号的文本", 2)
-        // 期望返回 ["没有句号的文本"] 或空列表（取决于实现）
-    }
-
-    @Test
-    void extractLastNSentences_emptyText_returnsEmpty() {
-        // 调用 extractLastNSentences("", 2)
-        // 期望返回空列表
-    }
-
-    @Test
-    void applyOverlap_singleChunk_returnsUnchanged() {
-        // 只有一个 chunk，不应用 overlap
-    }
-
-    @Test
-    void applyOverlap_multipleChunks_hasOverlap() {
-        // chunk1 = "第一段内容。第二段内容。第三段内容。"
-        // chunk2 = "第四段内容。第五段内容。"
-        // overlap = extractLastNSentences(chunk1, 2) = ["第二段内容。", "第三段内容。"]
-        // 结果 chunk2 = "第二段内容。第三段内容。第四段内容。第五段内容。"
-    }
-
-    @Test
-    void applyOverlap_overlapSentencesZero_noOverlap() {
-        // overlapSentences = 0，不应用 overlap
-    }
-}
-```
-
-注意：`extractLastNSentences` 和 `applyOverlap` 是 private 方法。建议将它们改为 package-private（去掉 `private` 关键字），以便测试类（同一包下）可以直接调用。
-
-- [ ] **Step 2: 运行测试**
-
-Run: `cd /Users/felx/Project/JavaProject/PaicodingProject/PaiSmart && mvn test -Dtest=ParseServiceOverlapTest -q`
-Expected: 所有测试通过
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add src/test/java/com/yizhaoqi/smartpai/service/ParseServiceOverlapTest.java
-git commit -m "test(parse): 新增分块句子级重叠单元测试"
-```
-
----
-
 ## 总结
 
 | Part | Tasks | 预计改动文件数 |
 |------|-------|--------------|
-| Part 1: Redis 滑动窗口 | Task 1-5 | 6 个文件 |
-| Part 2: Kafka 消费者修复 | Task 6-11 | 8 个文件 |
-| Part 3: 分块重叠 | Task 12-14 | 3 个文件 |
+| Part 1: Redis 滑动窗口 | Task 1-4 | 6 个文件 |
+| Part 2: Kafka 消费者修复 | Task 5-9 | 8 个文件 |
+| Part 3: 分块重叠 | Task 10-12 | 3 个文件 |
 
 **实施顺序建议**：Part 2 → Part 3 → Part 1（先修 Kafka 基础设施，再改解析逻辑，最后改 Redis。但三个 Part 无硬依赖，可按任意顺序执行）
