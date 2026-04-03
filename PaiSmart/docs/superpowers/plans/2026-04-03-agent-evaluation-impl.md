@@ -1239,7 +1239,7 @@ public class ResultEvaluatorEvaluator {
                     .replace("{sufficient}", String.valueOf(result.sufficient()))
                     .replace("{gap}", String.valueOf(result.gap()));
 
-                EvaluatorJudgeResult judgeResult = llmJudge.judgeAndParse(prompt, EVAL_CRITERIA, EvaluatorJudgeResult.class);
+                EvaluatorJudgeResult judgeResult = llmJudge.judgeAndParse(prompt, EvaluatorJudgeResult.class);
                 gapPrecisions.add(judgeResult.gapAccurate() ? 1.0 : 0.0);
 
             } catch (Exception e) {
@@ -1322,7 +1322,7 @@ public class RewriterEvaluator {
                     .replace("{gap}", tc.identifiedGap())
                     .replace("{rewrittenQuery}", rewrittenQuery);
 
-                RewriterJudgeResult result = llmJudge.judgeAndParse(prompt, EVAL_CRITERIA, RewriterJudgeResult.class);
+                RewriterJudgeResult result = llmJudge.judgeAndParse(prompt, RewriterJudgeResult.class);
 
                 qualityScores.add(result.clarity());
                 gapResolutions.add(result.gapResolution());
