@@ -59,7 +59,9 @@ public class RewriterEvaluator {
 
                 RewriterJudgeResult result = llmJudge.judgeAndParse(prompt, RewriterJudgeResult.class);
 
-                qualityScores.add(result.clarity());
+                // queryQuality is the average of preservesIntent and clarity
+                double queryQuality = (result.preservesIntent() + result.clarity()) / 2;
+                qualityScores.add(queryQuality);
                 gapResolutions.add(result.gapResolution());
 
             } catch (Exception e) {
