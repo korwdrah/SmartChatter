@@ -4,15 +4,18 @@ import com.yizhaoqi.smartpai.agent.PlannerAgent;
 import com.yizhaoqi.smartpai.agent.QueryRouter;
 import com.yizhaoqi.smartpai.agent.evaluation.evaluator.PlannerEvaluator;
 import com.yizhaoqi.smartpai.agent.evaluation.evaluator.ResultEvaluatorEvaluator;
+import com.yizhaoqi.smartpai.agent.evaluation.evaluator.RewriterEvaluator;
 import com.yizhaoqi.smartpai.agent.evaluation.evaluator.RouterEvaluator;
 import com.yizhaoqi.smartpai.agent.evaluation.report.ConsoleReporter;
 import com.yizhaoqi.smartpai.agent.evaluation.report.EvaluationReport;
 import com.yizhaoqi.smartpai.agent.evaluation.report.EvaluationSection;
 import com.yizhaoqi.smartpai.agent.evaluation.testdata.EvaluatorTestCase;
 import com.yizhaoqi.smartpai.agent.evaluation.testdata.PlannerTestCase;
+import com.yizhaoqi.smartpai.agent.evaluation.testdata.RewriterTestCase;
 import com.yizhaoqi.smartpai.agent.evaluation.testdata.RouterTestCase;
 import com.yizhaoqi.smartpai.agent.evaluation.testdata.TestDataLoader;
 import com.yizhaoqi.smartpai.agent.tool.EvaluateResultsTool;
+import com.yizhaoqi.smartpai.agent.tool.QueryRewriteTool;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.MethodOrderer;
@@ -37,6 +40,8 @@ public class AgentEvaluationSuite {
     @Autowired private PlannerEvaluator plannerEvaluator;
     @Autowired private EvaluateResultsTool evaluateResultsTool;
     @Autowired private ResultEvaluatorEvaluator resultEvaluatorEvaluator;
+    @Autowired private QueryRewriteTool queryRewriteTool;
+    @Autowired private RewriterEvaluator rewriterEvaluator;
     @Autowired private TestDataLoader testDataLoader;
     @Autowired private ConsoleReporter consoleReporter;
 
@@ -110,6 +115,22 @@ public class AgentEvaluationSuite {
             .addFailures(result.failures());
 
         report.addSection("Evaluator", section);
+    }
+
+    @Test
+    @Order(4)
+    void evaluateRewriter() {
+        List<RewriterTestCase> cases = testDataLoader.loadRewriterCases();
+
+        RewriterEvaluator.EvaluationResult result = rewriterEvaluator.evaluate(cases, queryRewriteTool);
+
+        EvaluationSection section = new EvaluationSection("Rewriter")
+            .setPrimaryScore(result.metrics().getPrimaryScore())
+            .addMetric("Query Quality", result.metrics().queryQuality())
+            .addMetric("Gap Resolution", result.metrics().gapResolution())
+            .addFailures(result.failures());
+
+        report.addSection("Rewriter", section);
     }
 
     @Test
