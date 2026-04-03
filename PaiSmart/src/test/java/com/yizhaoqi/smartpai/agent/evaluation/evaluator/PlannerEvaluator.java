@@ -8,7 +8,7 @@ import com.yizhaoqi.smartpai.agent.evaluation.testdata.PlannerTestCase;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
-import java.util.stream.Collectors;
+
 
 @Component
 public class PlannerEvaluator {
@@ -35,6 +35,13 @@ public class PlannerEvaluator {
     }
 
     public EvaluationResult evaluate(List<PlannerTestCase> testCases, PlannerAgent planner) {
+        Objects.requireNonNull(testCases, "testCases must not be null");
+        Objects.requireNonNull(planner, "planner must not be null");
+
+        if (testCases.isEmpty()) {
+            return new EvaluationResult(new PlannerMetrics(0, 0, 0, 0, 0), Collections.emptyList());
+        }
+
         List<Double> coverageScores = new ArrayList<>();
         List<Double> relevanceScores = new ArrayList<>();
         List<Double> redundancyScores = new ArrayList<>();
