@@ -1,0 +1,7 @@
+[
+  {"id": "edge-001", "query": "", "expectedRoute": "direct", "history": [], "category": "边界条件", "description": "空查询"},
+  {"id": "edge-002", "query": "查询", "expectedRoute": "direct", "history": [], "category": "边界条件", "description": "单字查询"},
+  {"id": "edge-003", "query": "这是一个超过五百个字符的超长查询文本这是一个超过五百个字符的超长查询文本这是一个超过五百个字符的超长查询文本这是一个超过五百个字符的超长查询文本这是一个超过五百个字符的超长查询文本这是一个超过五百个字符的超长查询文本这是一个超过五百个字符的超长查询文本这是一个超过五百个字符的超长查询文本这是一个超过五百个字符的超长查询文本这是一个超过五百个字符的超长查询文本这是一个超过五百个字符的超长查询文本这是一个超过五百个字符的超长查询文本这是一个超过五百个字符的超长查询文本这是一个超过五百个字符的超长查询文本这是一个超过五百个字符的超长查询文本", "expectedRoute": "rag", "history": [], "category": "边界条件", "description": "超长查询"},
+  {"id": "edge-004", "query": "查询包含\n换行符\n的文本", "expectedRoute": "rag", "history": [], "category": "边界条件", "description": "换行符"},
+  {"id": "edge-005", "query": "SELECT * FROM users WHERE id = 1", "expectedRoute": "rag", "history": [], "category": "边界条件", "description": "代码片段"}
+]

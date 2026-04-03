@@ -1,0 +1,7 @@
+[
+  {"id": "planner-001", "query": "比较产品A和产品B的价格和功能", "expectedSubQueries": ["产品A的价格", "产品B的价格", "产品A的功能", "产品B的功能"], "minSubQueryCount": 2, "maxSubQueryCount": 4, "keyConcepts": ["价格", "功能"], "difficulty": "easy"},
+  {"id": "planner-002", "query": "年假和加班制度分别是什么", "expectedSubQueries": ["年假制度", "加班制度"], "minSubQueryCount": 2, "maxSubQueryCount": 2, "keyConcepts": ["年假", "加班"], "difficulty": "easy"},
+  {"id": "planner-003", "query": "分析Q3销售下滑原因，对比去年同期", "expectedSubQueries": ["Q3销售数据", "去年同期销售数据", "销售下滑原因分析"], "minSubQueryCount": 2, "maxSubQueryCount": 4, "keyConcepts": ["Q3销售", "去年同期", "下滑原因"], "difficulty": "medium"},
+  {"id": "planner-004", "query": "对比A和B方案的优劣，给出建议", "expectedSubQueries": ["A方案优势", "A方案劣势", "B方案优势", "B方案劣势"], "minSubQueryCount": 2, "maxSubQueryCount": 4, "keyConcepts": ["A方案", "B方案", "优劣对比"], "difficulty": "medium"},
+  {"id": "planner-005", "query": "综合评估市场趋势、竞品动态、内部资源，制定下季度策略", "expectedSubQueries": ["市场趋势", "竞品动态", "内部资源", "下季度策略"], "minSubQueryCount": 3, "maxSubQueryCount": 4, "keyConcepts": ["市场趋势", "竞品动态", "内部资源", "策略"], "difficulty": "hard"}
+]

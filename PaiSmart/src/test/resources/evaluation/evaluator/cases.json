@@ -1,0 +1,6 @@
+[
+  {"id": "eval-001", "query": "公司的报销流程是什么", "searchResultsJson": "[{\"content\": \"公司报销流程：1. 填写报销单 2. 主管审批 3. 财务审核 4. 打款\"}]", "expectedSufficient": true, "expectedGap": null, "scenario": "完全匹配"},
+  {"id": "eval-002", "query": "公司的报销流程是什么", "searchResultsJson": "[{\"content\": \"公司福利包括五险一金和带薪年假\"}]", "expectedSufficient": false, "expectedGap": "缺少报销流程的具体步骤", "scenario": "无关结果"},
+  {"id": "eval-003", "query": "对比A和B方案", "searchResultsJson": "[{\"content\": \"A方案成本100万\"}, {\"content\": \"B方案成本80万\"}]", "expectedSufficient": false, "expectedGap": "缺少两个方案的优劣势分析", "scenario": "部分匹配"},
+  {"id": "eval-004", "query": "年假政策", "searchResultsJson": "[{\"content\": \"年假5天\"}, {\"content\": \"工龄满5年增加3天\"}, {\"content\": \"年假申请需提前一周\"}]", "expectedSufficient": true, "expectedGap": null, "scenario": "完全匹配"}
+]

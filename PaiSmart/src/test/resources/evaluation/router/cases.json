@@ -1,0 +1,17 @@
+[
+  {"id": "router-001", "query": "你好", "expectedRoute": "direct", "history": [], "category": "闲聊", "description": "简单问候"},
+  {"id": "router-002", "query": "谢谢你的帮助", "expectedRoute": "direct", "history": [], "category": "闲聊", "description": "感谢"},
+  {"id": "router-003", "query": "再见", "expectedRoute": "direct", "history": [], "category": "闲聊", "description": "告别"},
+  {"id": "router-004", "query": "今天天气不错", "expectedRoute": "direct", "history": [], "category": "闲聊", "description": "闲聊天气"},
+  {"id": "router-005", "query": "公司的报销流程是什么", "expectedRoute": "rag", "history": [], "category": "简单事实", "description": "单文档事实查询"},
+  {"id": "router-006", "query": "什么是机器学习", "expectedRoute": "rag", "history": [], "category": "简单事实", "description": "概念解释"},
+  {"id": "router-007", "query": "项目的截止日期是哪天", "expectedRoute": "rag", "history": [], "category": "简单事实", "description": "事实查询"},
+  {"id": "router-008", "query": "上次说的那个文档在哪", "expectedRoute": "rag", "history": [], "category": "简单事实", "description": "引用上下文"},
+  {"id": "router-009", "query": "对比A方案和B方案的优劣，给出建议", "expectedRoute": "agent", "history": [], "category": "复杂推理", "description": "对比分析"},
+  {"id": "router-010", "query": "年假和加班制度分别是什么", "expectedRoute": "agent", "history": [], "category": "多跳问题", "description": "两个独立子问题"},
+  {"id": "router-011", "query": "帮我对比一下Q1和Q2的季度报告", "expectedRoute": "agent", "history": [], "category": "复杂推理", "description": "对比分析"},
+  {"id": "router-012", "query": "去年Q4销售额最高的产品经理是谁", "expectedRoute": "agent", "history": [], "category": "多跳问题", "description": "需要先查销售额再查人员"},
+  {"id": "router-013", "query": "分析市场趋势和竞品动态，制定策略", "expectedRoute": "agent", "history": [], "category": "复杂推理", "description": "多维度分析"},
+  {"id": "router-014", "query": "公司的年假政策是什么", "expectedRoute": "rag", "history": [], "category": "简单事实", "description": "单文档查询"},
+  {"id": "router-015", "query": "帮我看看这个文档", "expectedRoute": "rag/agent", "history": [], "category": "边界模糊", "description": "歧义查询"}
+]

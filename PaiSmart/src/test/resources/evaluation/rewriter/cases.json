@@ -1,0 +1,5 @@
+[
+  {"id": "rewrite-001", "originalQuery": "报销流程", "identifiedGap": "缺少具体审批环节和时间要求", "expectedRewrite": "公司报销审批流程和各环节时间要求", "improvementFocus": "具体化"},
+  {"id": "rewrite-002", "originalQuery": "A方案", "identifiedGap": "缺少方案的详细内容", "expectedRewrite": "A方案的具体内容和实施细节", "improvementFocus": "明确化"},
+  {"id": "rewrite-003", "originalQuery": "对比分析", "identifiedGap": "缺少对比维度", "expectedRewrite": "从成本、时间、风险等维度对比分析", "improvementFocus": "补充维度"}
+]
