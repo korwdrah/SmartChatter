@@ -3,13 +3,16 @@ package com.yizhaoqi.smartpai.agent.evaluation;
 import com.yizhaoqi.smartpai.agent.PlannerAgent;
 import com.yizhaoqi.smartpai.agent.QueryRouter;
 import com.yizhaoqi.smartpai.agent.evaluation.evaluator.PlannerEvaluator;
+import com.yizhaoqi.smartpai.agent.evaluation.evaluator.ResultEvaluatorEvaluator;
 import com.yizhaoqi.smartpai.agent.evaluation.evaluator.RouterEvaluator;
 import com.yizhaoqi.smartpai.agent.evaluation.report.ConsoleReporter;
 import com.yizhaoqi.smartpai.agent.evaluation.report.EvaluationReport;
 import com.yizhaoqi.smartpai.agent.evaluation.report.EvaluationSection;
+import com.yizhaoqi.smartpai.agent.evaluation.testdata.EvaluatorTestCase;
 import com.yizhaoqi.smartpai.agent.evaluation.testdata.PlannerTestCase;
 import com.yizhaoqi.smartpai.agent.evaluation.testdata.RouterTestCase;
 import com.yizhaoqi.smartpai.agent.evaluation.testdata.TestDataLoader;
+import com.yizhaoqi.smartpai.agent.tool.EvaluateResultsTool;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.MethodOrderer;
@@ -32,6 +35,8 @@ public class AgentEvaluationSuite {
     @Autowired private RouterEvaluator routerEvaluator;
     @Autowired private PlannerAgent plannerAgent;
     @Autowired private PlannerEvaluator plannerEvaluator;
+    @Autowired private EvaluateResultsTool evaluateResultsTool;
+    @Autowired private ResultEvaluatorEvaluator resultEvaluatorEvaluator;
     @Autowired private TestDataLoader testDataLoader;
     @Autowired private ConsoleReporter consoleReporter;
 
@@ -89,6 +94,22 @@ public class AgentEvaluationSuite {
             .addFailures(result.failures());
 
         report.addSection("Planner", section);
+    }
+
+    @Test
+    @Order(3)
+    void evaluateEvaluator() {
+        List<EvaluatorTestCase> cases = testDataLoader.loadEvaluatorCases();
+
+        ResultEvaluatorEvaluator.EvaluationResult result = resultEvaluatorEvaluator.evaluate(cases, evaluateResultsTool);
+
+        EvaluationSection section = new EvaluationSection("Evaluator")
+            .setPrimaryScore(result.metrics().getPrimaryScore())
+            .addMetric("Agreement Rate", result.metrics().agreementRate())
+            .addMetric("Gap Precision", result.metrics().gapPrecision())
+            .addFailures(result.failures());
+
+        report.addSection("Evaluator", section);
     }
 
     @Test
