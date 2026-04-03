@@ -1,10 +1,13 @@
 package com.yizhaoqi.smartpai.agent.evaluation;
 
+import com.yizhaoqi.smartpai.agent.PlannerAgent;
 import com.yizhaoqi.smartpai.agent.QueryRouter;
+import com.yizhaoqi.smartpai.agent.evaluation.evaluator.PlannerEvaluator;
 import com.yizhaoqi.smartpai.agent.evaluation.evaluator.RouterEvaluator;
 import com.yizhaoqi.smartpai.agent.evaluation.report.ConsoleReporter;
 import com.yizhaoqi.smartpai.agent.evaluation.report.EvaluationReport;
 import com.yizhaoqi.smartpai.agent.evaluation.report.EvaluationSection;
+import com.yizhaoqi.smartpai.agent.evaluation.testdata.PlannerTestCase;
 import com.yizhaoqi.smartpai.agent.evaluation.testdata.RouterTestCase;
 import com.yizhaoqi.smartpai.agent.evaluation.testdata.TestDataLoader;
 import org.junit.jupiter.api.AfterAll;
@@ -27,6 +30,8 @@ public class AgentEvaluationSuite {
 
     @Autowired private QueryRouter queryRouter;
     @Autowired private RouterEvaluator routerEvaluator;
+    @Autowired private PlannerAgent plannerAgent;
+    @Autowired private PlannerEvaluator plannerEvaluator;
     @Autowired private TestDataLoader testDataLoader;
     @Autowired private ConsoleReporter consoleReporter;
 
@@ -65,6 +70,25 @@ public class AgentEvaluationSuite {
         section.addMetric("Correct Cases", result.metrics().correctCases());
 
         report.addSection("Router", section);
+    }
+
+    @Test
+    @Order(2)
+    void evaluatePlanner() {
+        List<PlannerTestCase> cases = testDataLoader.loadPlannerCases();
+
+        PlannerEvaluator.EvaluationResult result = plannerEvaluator.evaluate(cases, plannerAgent);
+
+        EvaluationSection section = new EvaluationSection("Planner")
+            .setPrimaryScore(result.metrics().getPrimaryScore())
+            .addMetric("Avg Sub-queries", result.metrics().avgSubQueryCount())
+            .addMetric("Sub-query Variance", result.metrics().subQueryCountVariance())
+            .addMetric("Coverage Score", result.metrics().coverageScore())
+            .addMetric("Relevance Score", result.metrics().relevanceScore())
+            .addMetric("Redundancy Score", result.metrics().redundancyScore())
+            .addFailures(result.failures());
+
+        report.addSection("Planner", section);
     }
 
     @Test
