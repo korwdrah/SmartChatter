@@ -382,17 +382,16 @@ public interface LLMJudge {
     /**
      * 使用 LLM 评估内容
      *
-     * @param content  待评估内容
-     * @param criteria 评估标准
+     * @param content  待评估内容（完整 prompt）
      * @return 评估结果
      */
-    JudgeResult judge(String content, String criteria);
+    JudgeResult judge(String content);
 
     /**
      * 评估并返回指定类型的 JSON 对象
      */
-    default <T> T judgeAndParse(String content, String criteria, Class<T> clazz) {
-        JudgeResult result = judge(content, criteria);
+    default <T> T judgeAndParse(String content, Class<T> clazz) {
+        JudgeResult result = judge(content);
         if (!result.success()) {
             throw new RuntimeException("Judge failed: " + result.errorMessage());
         }
@@ -446,6 +445,7 @@ package com.yizhaoqi.smartpai.config;
 
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -494,16 +494,14 @@ public class GLMJudge implements LLMJudge {
     }
 
     @Override
-    public JudgeResult judge(String content, String criteria) {
+    public JudgeResult judge(String content) {
         rateLimiter.acquire();
-
-        String prompt = buildPrompt(content, criteria);
 
         int retries = MAX_RETRIES;
         while (retries > 0) {
             try {
                 String response = judgeClient.prompt()
-                    .user(prompt)
+                    .user(content)
                     .call()
                     .content();
 
@@ -518,26 +516,18 @@ public class GLMJudge implements LLMJudge {
 
         return JudgeResult.failed("Failed to get valid response after " + MAX_RETRIES + " retries");
     }
-
-    private String buildPrompt(String content, String criteria) {
-        return """
-            你是一个公正的评估专家。请根据以下标准评估内容。
-
-            评估标准：
-            %s
-
-            待评估内容：
-            %s
-
-            请严格按照指定 JSON 格式输出评估结果，不要包含任何其他文字。
-            """.formatted(criteria, content);
-    }
 }
 ```
 
 - [ ] **Step 5: 添加 Guava 依赖（如需要）**
 
 检查 pom.xml 是否已有 guava 依赖，若无则添加：
+
+```bash
+grep -q "guava" pom.xml || echo "需要添加 guava 依赖"
+```
+
+如果需要添加，在 `pom.xml` 的 `<dependencies>` 中加入：
 
 ```xml
 <dependency>
@@ -810,6 +800,8 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 - Create: `src/test/resources/evaluation/evaluator/cases.json`
 - Create: `src/test/resources/evaluation/rewriter/cases.json`
 
+> **注意**：JSON 文件中的测试用例数量是初始代表样本，后续可根据需要扩展。Spec 中定义的目标数量（Router 100条、Planner 40条等）是最终目标，本计划先实现核心功能。
+
 - [ ] **Step 1: 创建 Router 测试数据**
 
 `src/test/resources/evaluation/router/cases.json`:
@@ -919,6 +911,7 @@ import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
+import java.util.ArrayList;
 import java.util.List;
 
 @SpringBootTest
@@ -941,11 +934,9 @@ public class AgentEvaluationSuite {
     @Test
     @Order(1)
     void evaluateRouter() {
-        List<RouterTestCase> cases = testDataLoader.loadRouterCases();
-        List<RouterTestCase> edgeCases = testDataLoader.loadRouterEdgeCases();
-
-        // Combine all cases
-        cases.addAll(edgeCases);
+        // Create mutable list to combine cases
+        List<RouterTestCase> cases = new ArrayList<>(testDataLoader.loadRouterCases());
+        cases.addAll(testDataLoader.loadRouterEdgeCases());
 
         // Run evaluation
         RouterEvaluator.EvaluationResult result = routerEvaluator.evaluate(cases, queryRouter);
@@ -1079,7 +1070,7 @@ public class PlannerEvaluator {
                     .replace("{query}", tc.query())
                     .replace("{subQueries}", subQueries.toString());
 
-                PlannerJudgeResult result = llmJudge.judgeAndParse(prompt, EVAL_CRITERIA, PlannerJudgeResult.class);
+                PlannerJudgeResult result = llmJudge.judgeAndParse(prompt, PlannerJudgeResult.class);
 
                 coverageScores.add(result.coverage());
                 relevanceScores.add(result.relevance());
@@ -1178,11 +1169,10 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 8: Evaluator 和 Rewriter 评估器
+## Task 8: Evaluator 评估器
 
 **Files:**
 - Create: `src/test/java/com/yizhaoqi/smartpai/agent/evaluation/evaluator/ResultEvaluatorEvaluator.java`
-- Create: `src/test/java/com/yizhaoqi/smartpai/agent/evaluation/evaluator/RewriterEvaluator.java`
 - Modify: `src/test/java/com/yizhaoqi/smartpai/agent/evaluation/AgentEvaluationSuite.java`
 
 - [ ] **Step 1: 创建 ResultEvaluatorEvaluator**
@@ -1386,7 +1376,140 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 9: 最终集成测试
+## Task 9: Rewriter 评估器
+
+**Files:**
+- Create: `src/test/java/com/yizhaoqi/smartpai/agent/evaluation/evaluator/RewriterEvaluator.java`
+- Modify: `src/test/java/com/yizhaoqi/smartpai/agent/evaluation/AgentEvaluationSuite.java`
+
+- [ ] **Step 1: 创建 RewriterEvaluator**
+
+```java
+package com.yizhaoqi.smartpai.agent.evaluation.evaluator;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.yizhaoqi.smartpai.agent.tool.QueryRewriteTool;
+import com.yizhaoqi.smartpai.agent.evaluation.judge.LLMJudge;
+import com.yizhaoqi.smartpai.agent.evaluation.report.FailureDetail;
+import com.yizhaoqi.smartpai.agent.evaluation.testdata.RewriterTestCase;
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+
+@Component
+public class RewriterEvaluator {
+
+    private final LLMJudge llmJudge;
+
+    private static final String EVAL_PROMPT = """
+        评估查询重写效果。
+
+        原始查询: {originalQuery}
+        识别的缺口: {gap}
+        重写后的查询: {rewrittenQuery}
+
+        请评估:
+        1. 重写查询是否保持原意
+        2. 重写是否有效解决了识别的缺口
+        3. 重写查询的表达清晰度
+
+        以 JSON 格式输出:
+        {"preservesIntent": 0.9, "gapResolution": 0.8, "clarity": 0.85, "reasoning": "简要说明"}
+        """;
+
+    public RewriterEvaluator(LLMJudge llmJudge) {
+        this.llmJudge = llmJudge;
+    }
+
+    public EvaluationResult evaluate(List<RewriterTestCase> testCases, QueryRewriteTool rewriter) {
+        List<Double> qualityScores = new ArrayList<>();
+        List<Double> gapResolutions = new ArrayList<>();
+        List<FailureDetail> failures = new ArrayList<>();
+
+        for (RewriterTestCase tc : testCases) {
+            try {
+                List<String> rewrittenQueries = rewriter.rewrite(tc.originalQuery(), tc.identifiedGap());
+                String rewrittenQuery = String.join("; ", rewrittenQueries);
+
+                // LLM evaluation
+                String prompt = EVAL_PROMPT
+                    .replace("{originalQuery}", tc.originalQuery())
+                    .replace("{gap}", tc.identifiedGap())
+                    .replace("{rewrittenQuery}", rewrittenQuery);
+
+                RewriterJudgeResult result = llmJudge.judgeAndParse(prompt, RewriterJudgeResult.class);
+
+                qualityScores.add(result.clarity());
+                gapResolutions.add(result.gapResolution());
+
+            } catch (Exception e) {
+                failures.add(new FailureDetail("Rewriter", tc.originalQuery(), "valid rewrite", "error: " + e.getMessage()));
+            }
+        }
+
+        double avgQuality = qualityScores.stream().mapToDouble(d -> d).average().orElse(0);
+        double avgGapResolution = gapResolutions.stream().mapToDouble(d -> d).average().orElse(0);
+
+        RewriterMetrics metrics = new RewriterMetrics(avgQuality, avgGapResolution);
+        return new EvaluationResult(metrics, failures);
+    }
+
+    public record RewriterMetrics(double queryQuality, double gapResolution) {
+        public double getPrimaryScore() {
+            return (queryQuality + gapResolution) / 2;
+        }
+    }
+
+    public record EvaluationResult(RewriterMetrics metrics, List<FailureDetail> failures) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record RewriterJudgeResult(double preservesIntent, double gapResolution, double clarity, String reasoning) {}
+}
+```
+
+- [ ] **Step 2: 更新 AgentEvaluationSuite 添加 Rewriter 评估**
+
+```java
+@Autowired private QueryRewriteTool queryRewriteTool;
+@Autowired private RewriterEvaluator rewriterEvaluator;
+
+@Test
+@Order(4)
+void evaluateRewriter() {
+    List<RewriterTestCase> cases = testDataLoader.loadRewriterCases();
+
+    RewriterEvaluator.EvaluationResult result = rewriterEvaluator.evaluate(cases, queryRewriteTool);
+
+    EvaluationSection section = new EvaluationSection("Rewriter")
+        .setPrimaryScore(result.metrics().getPrimaryScore())
+        .addMetric("Query Quality", result.metrics().queryQuality())
+        .addMetric("Gap Resolution", result.metrics().gapResolution())
+        .addFailures(result.failures());
+
+    report.addSection("Rewriter", section);
+}
+```
+
+- [ ] **Step 3: 编译验证**
+
+Run: `mvn compile -q`
+Expected: BUILD SUCCESS
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/test/java/com/yizhaoqi/smartpai/agent/evaluation/
+git commit -m "feat(evaluation): 添加 Rewriter 评估器
+
+- RewriterEvaluator: query quality + gap resolution
+- 集成到 AgentEvaluationSuite
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 10: 最终集成测试
 
 **Files:**
 - Modify: `src/test/java/com/yizhaoqi/smartpai/agent/evaluation/AgentEvaluationSuite.java`
@@ -1437,7 +1560,8 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 | 5 | 测试数据 JSON | 5 files |
 | 6 | 主评估套件 | 1 file |
 | 7 | Planner 评估器 | 2 files |
-| 8 | Evaluator/Rewriter 评估器 | 3 files |
-| 9 | 最终集成测试 | 1 file |
+| 8 | Evaluator 评估器 | 2 files |
+| 9 | Rewriter 评估器 | 2 files |
+| 10 | 最终集成测试 | 1 file |
 
-**Total: 27 files**
+**Total: 28 files**
