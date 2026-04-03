@@ -13,6 +13,17 @@ public class RouterEvaluator {
     private static final List<String> ROUTES = List.of("direct", "rag", "agent");
 
     public EvaluationResult evaluate(List<RouterTestCase> testCases, QueryRouter router) {
+        Objects.requireNonNull(testCases, "testCases must not be null");
+        Objects.requireNonNull(router, "router must not be null");
+
+        if (testCases.isEmpty()) {
+            Map<String, Double> zeros = new HashMap<>();
+            ROUTES.forEach(r -> zeros.put(r, 0.0));
+            return new EvaluationResult("Router",
+                new RouterMetrics(0.0, -1.0, zeros, zeros, zeros, 0, 0),
+                List.of());
+        }
+
         int correct = 0;
         int ambiguousCorrect = 0;
         int ambiguousTotal = 0;
@@ -38,7 +49,7 @@ public class RouterEvaluator {
                 }
             } else {
                 String expected = tc.expectedRoute();
-                if (predicted.equals(expected)) {
+                if (Objects.equals(predicted, expected)) {
                     correct++;
                     tp.merge(expected, 1, Integer::sum);
                 } else {
