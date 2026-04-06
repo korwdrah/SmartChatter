@@ -45,6 +45,8 @@ spring:
     topic:
       file-processing: file-processing-topic1 # 新增的 Topic 配置
       dlt: file-processing-dlt # 死信队列主题
+      partitions: 3
+      replication-factor: 1
   webflux:
     client:
       max-in-memory-size: 16MB  # 增加响应大小限制

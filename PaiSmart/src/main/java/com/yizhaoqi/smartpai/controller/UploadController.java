@@ -292,11 +292,7 @@ public class UploadController {
             
             LogUtils.logBusiness("MERGE_FILE", userId, "发送文件处理任务到Kafka(事务): topic=%s, fileMd5=%s, fileName=%s", 
                     kafkaConfig.getFileProcessingTopic(), request.fileMd5(), request.fileName());
-            kafkaTemplate.executeInTransaction(kt -> {
-                //在事务中发送消息
-                kt.send(kafkaConfig.getFileProcessingTopic(), task);
-                return true;
-            });
+            kafkaTemplate.send(kafkaConfig.getFileProcessingTopic(), request.fileMd5(), task);
             LogUtils.logBusiness("MERGE_FILE", userId, "文件处理任务已发送: fileMd5=%s, fileName=%s, fileType=%s", request.fileMd5(), request.fileName(), fileType);
 
             // 构建数据对象
@@ -482,4 +478,3 @@ public class UploadController {
         }
     }
 }
-

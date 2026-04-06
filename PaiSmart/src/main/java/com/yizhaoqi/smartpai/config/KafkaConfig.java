@@ -1,7 +1,10 @@
 package com.yizhaoqi.smartpai.config;
 
+import com.yizhaoqi.smartpai.model.FileProcessingTask;
+import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.beans.factory.annotation.Value;
@@ -11,6 +14,7 @@ import org.springframework.kafka.core.*;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 import org.springframework.kafka.support.serializer.JsonSerializer;
 import org.apache.kafka.common.TopicPartition;
+import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
@@ -30,6 +34,12 @@ public class KafkaConfig {
 
     @Value("${spring.kafka.topic.dlt}")
     private String fileProcessingDltTopic;
+
+    @Value("${spring.kafka.topic.partitions:3}")
+    private int topicPartitions;
+
+    @Value("${spring.kafka.topic.replication-factor:1}")
+    private short topicReplicationFactor;
 
     @Value("${spring.kafka.consumer.group-id}")
     private String fileProcessingGroupId;
@@ -52,18 +62,15 @@ public class KafkaConfig {
     @Bean
     public ProducerFactory<String, Object> producerFactory() {
         Map<String, Object> config = new HashMap<>();
-//        config.put(ProducerConfig.ACKS_CONFIG, "all");
         config.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         config.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         config.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
-        // 可靠投递配置
-        config.put(ProducerConfig.ACKS_CONFIG, "all"); // 全部 ISR 落盘才确认
-        config.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true); // 幂等生产者
-        config.put(ProducerConfig.RETRIES_CONFIG, 3); // 自动重试 3 次
+        config.put(ProducerConfig.ACKS_CONFIG, "all");
+        config.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
+        config.put(ProducerConfig.RETRIES_CONFIG, 3);
+        config.put(JsonSerializer.ADD_TYPE_INFO_HEADERS, false);
 
         DefaultKafkaProducerFactory<String, Object> factory = new DefaultKafkaProducerFactory<>(config);
-        // 设置事务前缀，启用事务能力
-        factory.setTransactionIdPrefix("file-upload-tx-");
         return factory;
     }
 
@@ -75,12 +82,15 @@ public class KafkaConfig {
     @Bean
     public ConsumerFactory<String, Object> consumerFactory() {
         Map<String, Object> config = new HashMap<>();
-//        config.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false); // 禁用自动提交偏移量
         config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         config.put(ConsumerConfig.GROUP_ID_CONFIG, fileProcessingGroupId);
+        config.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, autoOffsetReset);
+        config.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
         config.put(JsonDeserializer.TRUSTED_PACKAGES, trustedPackages);
+        config.put(JsonDeserializer.USE_TYPE_INFO_HEADERS, false);
+        config.put(JsonDeserializer.VALUE_DEFAULT_TYPE, FileProcessingTask.class.getName());
         return new DefaultKafkaConsumerFactory<>(config);
     }
 
@@ -100,8 +110,30 @@ public class KafkaConfig {
         ConcurrentKafkaListenerContainerFactory<String, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
         factory.setCommonErrorHandler(errorHandler);
-        //消费者实例3个，partition3个
         factory.setConcurrency(3);
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
         return factory;
+    }
+
+    @Bean
+    public NewTopic fileProcessingTopic() {
+        Map<String, String> configs = new HashMap<>();
+        configs.put(TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, "1");
+        return org.springframework.kafka.config.TopicBuilder.name(fileProcessingTopic)
+            .partitions(topicPartitions)
+            .replicas(topicReplicationFactor)
+            .configs(configs)
+            .build();
+    }
+
+    @Bean
+    public NewTopic fileProcessingDltTopic() {
+        Map<String, String> configs = new HashMap<>();
+        configs.put(TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, "1");
+        return org.springframework.kafka.config.TopicBuilder.name(fileProcessingDltTopic)
+            .partitions(topicPartitions)
+            .replicas(topicReplicationFactor)
+            .configs(configs)
+            .build();
     }
 }
